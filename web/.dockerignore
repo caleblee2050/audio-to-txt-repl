@@ -1,0 +1,11 @@
+# Exclude local artifacts from Docker build context
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+.vscode
+.idea
+npm-debug.log*
+*.log

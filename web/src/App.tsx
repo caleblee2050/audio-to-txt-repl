@@ -15,6 +15,7 @@ type SavedDoc = { id: string; title: string; content: string; createdAt: number;
 
 function App() {
   const [isRecording, setIsRecording] = useState(false)
+  const isRecordingRef = useRef(false)
   const [transcript, setTranscript] = useState('')
   const [formatId, setFormatId] = useState<FormatId>('summary')
   const [composedText, setComposedText] = useState('')
@@ -24,6 +25,7 @@ function App() {
   const [geminiEnabled, setGeminiEnabled] = useState<boolean | null>(null)
   const [instruction, setInstruction] = useState('')
   const recognitionRef = useRef<any>(null)
+  const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
 
   useEffect(() => {
     // 로컬 저장된 문서 불러오기
@@ -43,7 +45,7 @@ function App() {
     // 서버 헬스 체크로 Twilio 설정 여부 확인
     const checkHealth = async () => {
       try {
-        const resp = await fetch('http://localhost:3001/api/health')
+        const resp = await fetch(`${API_BASE}/api/health`)
         const data = await resp.json()
         setTwilioEnabled(!!data?.twilioConfigured)
         setGeminiEnabled(!!data?.geminiConfigured)
@@ -78,6 +80,7 @@ function App() {
     recognition.continuous = true
     recognition.interimResults = true
     recognition.lang = 'ko-KR'
+    isRecordingRef.current = true
 
     let finalText = transcript
     recognition.onresult = (event: any) => {
@@ -100,8 +103,20 @@ function App() {
     }
 
     recognition.onend = () => {
-      setIsRecording(false)
-      recognitionRef.current = null
+      if (isRecordingRef.current) {
+        try {
+          recognition.start()
+        } catch {
+          setTimeout(() => {
+            if (isRecordingRef.current) {
+              try { recognition.start() } catch {}
+            }
+          }, 500)
+        }
+      } else {
+        setIsRecording(false)
+        recognitionRef.current = null
+      }
     }
 
     recognitionRef.current = recognition
@@ -115,6 +130,7 @@ function App() {
       rec.stop()
       recognitionRef.current = null
     }
+    isRecordingRef.current = false
     setIsRecording(false)
   }
 
@@ -132,7 +148,7 @@ function App() {
       return
     }
     try {
-      const resp = await fetch('http://localhost:3001/api/compose', {
+      const resp = await fetch(`${API_BASE}/api/compose`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transcript, formatId, instruction: instruction.trim() }),
@@ -189,7 +205,7 @@ function App() {
       return
     }
     try {
-      const resp = await fetch('http://localhost:3001/api/sms/send', {
+      const resp = await fetch(`${API_BASE}/api/sms/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ to: phoneNumber, message: body }),

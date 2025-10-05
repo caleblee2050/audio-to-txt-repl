@@ -2,6 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import twilio from 'twilio';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 // GoogleGenerativeAI SDK 사용 시 버전/모델 불일치로 오류가 발생하여
 // 안정적인 REST 호출로 변경합니다.
 
@@ -125,6 +128,22 @@ app.post('/api/compose', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
+
+// Production: serve built frontend from /dist
+try {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const distPath = path.join(__dirname, '../dist');
+  app.use(express.static(distPath));
+  // SPA fallback to index.html
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+} catch (e) {
+  // non-blocking; dist may not exist in dev
+}
+
 app.listen(PORT, () => {
   console.log(`API server running at http://localhost:${PORT}`);
 });
