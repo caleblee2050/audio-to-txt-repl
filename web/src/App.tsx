@@ -25,7 +25,12 @@ function App() {
   const [geminiEnabled, setGeminiEnabled] = useState<boolean | null>(null)
   const [instruction, setInstruction] = useState('')
   const [theme, setTheme] = useState<'dark' | 'light'>('dark')
+  const [activeTab, setActiveTab] = useState<'record' | 'compose' | 'sms' | 'saved'>('record')
   const recognitionRef = useRef<any>(null)
+  const recordRef = useRef<HTMLDivElement | null>(null)
+  const composeRef = useRef<HTMLDivElement | null>(null)
+  const smsRef = useRef<HTMLDivElement | null>(null)
+  const savedRef = useRef<HTMLDivElement | null>(null)
   const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
 
   useEffect(() => {
@@ -69,6 +74,13 @@ function App() {
     document.documentElement.dataset.theme = theme === 'light' ? 'light' : ''
     localStorage.setItem('theme', theme)
   }, [theme])
+
+  const scrollTo = (ref: React.RefObject<HTMLDivElement>, tab: 'record' | 'compose' | 'sms' | 'saved') => {
+    try {
+      ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      setActiveTab(tab)
+    } catch {}
+  }
 
   // 컴포넌트 언마운트 시 녹음 강제 종료(잔여 이벤트로 재시작되는 문제 예방)
   useEffect(() => {
@@ -272,10 +284,10 @@ function App() {
         </div>
       </header>
 
-      <main className="container">
+      <main className="container main">
         <h1 className="app-title">음성→텍스트 정리 및 문자 발송</h1>
 
-        <section className="section">
+        <section ref={recordRef} className="section" id="record">
           <h2 className="section-title">🎙️ 1) 음성 인식 (정지까지 연속 기록)</h2>
           <div className="controls">
             <button
@@ -296,7 +308,7 @@ function App() {
           />
         </section>
 
-        <section className="section">
+        <section ref={composeRef} className="section" id="compose">
           <h2 className="section-title">🧠 2) 문서 형식 선택 및 작성</h2>
           <div className="controls">
             <label className="grow">
@@ -332,7 +344,7 @@ function App() {
           </div>
         </section>
 
-        <section className="section">
+        <section ref={smsRef} className="section" id="sms">
           <h2 className="section-title">✉️ 3) 문자(SMS) 발송</h2>
           <div className="controls">
             <input
@@ -354,7 +366,7 @@ function App() {
           </p>
         </section>
 
-        <section className="section">
+        <section ref={savedRef} className="section" id="saved">
           <h2 className="section-title">📁 저장된 문서</h2>
           {savedDocs.length === 0 ? (
             <p className="help">저장된 문서가 없습니다.</p>
@@ -376,6 +388,42 @@ function App() {
           )}
         </section>
       </main>
+      <nav className="bottom-nav">
+        <div className="nav-inner container">
+          <button
+            className={`tab-btn ${activeTab === 'record' ? 'active' : ''}`}
+            onClick={() => scrollTo(recordRef, 'record')}
+            aria-label="녹음 섹션으로 이동"
+          >
+            <span>🎙️</span>
+            <span className="tab-label">녹음</span>
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'compose' ? 'active' : ''}`}
+            onClick={() => scrollTo(composeRef, 'compose')}
+            aria-label="문서 섹션으로 이동"
+          >
+            <span>🧠</span>
+            <span className="tab-label">문서</span>
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'sms' ? 'active' : ''}`}
+            onClick={() => scrollTo(smsRef, 'sms')}
+            aria-label="문자 섹션으로 이동"
+          >
+            <span>✉️</span>
+            <span className="tab-label">문자</span>
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'saved' ? 'active' : ''}`}
+            onClick={() => scrollTo(savedRef, 'saved')}
+            aria-label="저장 문서 섹션으로 이동"
+          >
+            <span>📁</span>
+            <span className="tab-label">저장</span>
+          </button>
+        </div>
+      </nav>
     </>
   )
 }
