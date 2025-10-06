@@ -194,3 +194,15 @@ input, select, textarea { transition: border-color 160ms ease, background 160ms 
   .icon-btn.recording { animation: none; }
   .section { animation: none; }
 }
+
+/* Icon and interaction enhancements */
+:root {
+  --icon-muted: var(--muted);
+  --icon-active: var(--primary);
+}
+.section-title svg { color: var(--icon-active); }
+.empty-state svg { color: var(--icon-muted); }
+.help svg { color: var(--icon-muted); }
+.tab-btn:hover { border-color: var(--primary); }
+.tab-btn.active { transform: translateY(-2px); }
+.btn:disabled { opacity: 0.65; cursor: not-allowed; filter: saturate(0.8) brightness(0.92); }

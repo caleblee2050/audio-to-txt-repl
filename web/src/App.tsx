@@ -330,9 +330,9 @@ function App() {
             <button className="btn btn-primary" onClick={composeWithGemini} disabled={geminiEnabled === false}>지침대로 문서 작성</button>
           </div>
           <p className="help">
-            {geminiEnabled === null && '서버 연결 상태를 확인 중입니다.'}
-            {geminiEnabled === false && '서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정).'}
-            {geminiEnabled === true && 'Gemini 설정이 감지되었습니다. 문서 작성이 가능합니다.'}
+            {geminiEnabled === null && (<><AlertCircle size={14} /> 서버 연결 상태를 확인 중입니다.</>)}
+            {geminiEnabled === false && (<><AlertCircle size={14} /> 서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정).</>)}
+            {geminiEnabled === true && (<><CheckCircle2 size={14} /> Gemini 설정이 감지되었습니다. 문서 작성이 가능합니다.</>)}
           </p>
           <textarea
             value={instruction}
@@ -370,9 +370,9 @@ function App() {
             <button className="btn" onClick={openSmsApp}>휴대폰 문자앱으로 열기</button>
           </div>
           <p className="help">
-            {twilioEnabled === null && '서버 연결 상태를 확인 중입니다.'}
-            {twilioEnabled === false && '서버에 Twilio 설정이 없습니다(.env 설정 필요).'}
-            {twilioEnabled === true && 'Twilio 설정이 감지되었습니다. 문자 발송이 가능합니다.'}
+            {twilioEnabled === null && (<><AlertCircle size={14} /> 서버 연결 상태를 확인 중입니다.</>)}
+            {twilioEnabled === false && (<><AlertCircle size={14} /> 서버에 Twilio 설정이 없습니다(.env 설정 필요).</>)}
+            {twilioEnabled === true && (<><CheckCircle2 size={14} /> Twilio 설정이 감지되었습니다. 문자 발송이 가능합니다.</>)}
           </p>
         </section>
 
