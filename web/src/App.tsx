@@ -238,115 +238,121 @@ function App() {
   }
 
   return (
-    <div style={{ maxWidth: 960, margin: '0 auto', padding: 16 }}>
-      <h1>음성→텍스트 정리 및 문자 발송</h1>
-
-      <section style={{ marginBottom: 16, borderBottom: '1px solid #eee', paddingBottom: 12 }}>
-        <h2>1) 음성 인식 (정지까지 연속 기록)</h2>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <button
-            aria-label="녹음 토글"
-            title={isRecording ? '정지' : '녹음 시작'}
-            onClick={() => (isRecording ? stopRecording() : startRecording())}
-            style={{
-              width: 48,
-              height: 48,
-              borderRadius: '50%',
-              fontSize: 24,
-              lineHeight: '48px',
-              textAlign: 'center',
-              border: '1px solid #ccc',
-              background: isRecording ? '#f55' : '#fff',
-              color: isRecording ? '#fff' : '#333',
-              cursor: 'pointer',
-            }}
-          >
-            {isRecording ? '⏹️' : '🎙️'}
-          </button>
-          <button onClick={clearTranscript}>초기화</button>
+    <>
+      <header className="topbar">
+        <div className="topbar-inner container">
+          <div className="brand">Audio → Text Composer</div>
+          <span className="subtitle">스마트폰 최적화 · 실시간 음성 정리</span>
+          <span className="grow" />
+          {geminiEnabled === true && <span className="badge">Gemini OK</span>}
+          {geminiEnabled === false && <span className="badge">Gemini 설정 필요</span>}
+          {twilioEnabled === true && <span className="badge">Twilio OK</span>}
+          {twilioEnabled === false && <span className="badge">Twilio 설정 필요</span>}
         </div>
-        <textarea
-          value={transcript}
-          onChange={(e) => setTranscript(e.target.value)}
-          placeholder="여기에 음성 인식 결과가 실시간으로 누적됩니다."
-          style={{ width: '100%', height: 160, marginTop: 8 }}
-        />
-      </section>
+      </header>
 
-      <section style={{ marginBottom: 16, borderBottom: '1px solid #eee', paddingBottom: 12 }}>
-        <h2>2) 문서 형식 선택 및 작성</h2>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <label>
-            형식:
-            <select value={formatId} onChange={(e) => setFormatId(e.target.value as FormatId)} style={{ marginLeft: 8 }}>
-              {formatOptions.map(f => (
-                <option key={f.id} value={f.id}>{f.label}</option>
-              ))}
-            </select>
-          </label>
-          <button onClick={composeWithGemini} disabled={geminiEnabled === false}>지침대로 문서 작성</button>
-        </div>
-        <p style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
-          {geminiEnabled === null && '서버 연결 상태를 확인 중입니다.'}
-          {geminiEnabled === false && '서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정).'}
-          {geminiEnabled === true && 'Gemini 설정이 감지되었습니다. 문서 작성이 가능합니다.'}
-        </p>
-        <textarea
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          placeholder="수정 요청/추가 지침을 입력하세요 (예: 300자 이내 요약, 공손한 어조로 재작성 등)"
-          style={{ width: '100%', height: 80, marginTop: 8 }}
-        />
-        <textarea
-          value={composedText}
-          onChange={(e) => setComposedText(e.target.value)}
-          placeholder="선택한 형식과 숨은 프롬프트에 따라 생성된 문서를 편집할 수 있습니다."
-          style={{ width: '100%', height: 220, marginTop: 8 }}
-        />
-        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-          <button onClick={saveDocument}>저장</button>
-          <button onClick={() => setComposedText('')}>삭제(편집중인 문서)</button>
-        </div>
-      </section>
+      <main className="container">
+        <h1 style={{ fontSize: 22, margin: '16px 0' }}>음성→텍스트 정리 및 문자 발송</h1>
 
-      <section style={{ marginBottom: 16, borderBottom: '1px solid #eee', paddingBottom: 12 }}>
-        <h2>3) 문자(SMS) 발송</h2>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input
-            value={phoneNumber}
-            onChange={(e) => setPhoneNumber(e.target.value)}
-            placeholder="수신자 번호(+82...)"
-            style={{ flex: '1 1 220px' }}
+        <section className="section">
+          <h2 className="section-title">1) 음성 인식 (정지까지 연속 기록)</h2>
+          <div className="controls">
+            <button
+              aria-label="녹음 토글"
+              title={isRecording ? '정지' : '녹음 시작'}
+              onClick={() => (isRecording ? stopRecording() : startRecording())}
+              className={`icon-btn ${isRecording ? 'recording' : ''}`}
+            >
+              {isRecording ? '⏹️' : '🎙️'}
+            </button>
+            <button className="btn" onClick={clearTranscript}>초기화</button>
+          </div>
+          <textarea
+            value={transcript}
+            onChange={(e) => setTranscript(e.target.value)}
+            placeholder="여기에 음성 인식 결과가 실시간으로 누적됩니다."
+            className="textarea-md mt-8"
           />
-          <button onClick={sendSMS} disabled={twilioEnabled === false}>문자 발송(Twilio)</button>
-          <button onClick={openSmsApp}>휴대폰 문자앱으로 열기</button>
-        </div>
-        <p style={{ fontSize: 12, color: '#666' }}>
-          {twilioEnabled === null && '서버 연결 상태를 확인 중입니다.'}
-          {twilioEnabled === false && '서버에 Twilio 설정이 없습니다(.env 설정 필요).'}
-          {twilioEnabled === true && 'Twilio 설정이 감지되었습니다. 문자 발송이 가능합니다.'}
-        </p>
-      </section>
+        </section>
 
-      <section>
-        <h2>저장된 문서</h2>
-        {savedDocs.length === 0 ? (
-          <p style={{ color: '#666' }}>저장된 문서가 없습니다.</p>
-        ) : (
-          <ul>
-            {savedDocs.map(doc => (
-              <li key={doc.id} style={{ marginBottom: 8 }}>
-                <strong>[{formatOptions.find(f => f.id === doc.formatId)?.label}]</strong> {new Date(doc.createdAt).toLocaleString()} — {doc.title}
-                <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                  <button onClick={() => loadDocument(doc.id)}>불러와 편집</button>
-                  <button onClick={() => deleteDocument(doc.id)}>삭제</button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-    </div>
+        <section className="section">
+          <h2 className="section-title">2) 문서 형식 선택 및 작성</h2>
+          <div className="controls">
+            <label className="grow">
+              형식
+              <select value={formatId} onChange={(e) => setFormatId(e.target.value as FormatId)} className="mt-8">
+                {formatOptions.map(f => (
+                  <option key={f.id} value={f.id}>{f.label}</option>
+                ))}
+              </select>
+            </label>
+            <button className="btn btn-primary" onClick={composeWithGemini} disabled={geminiEnabled === false}>지침대로 문서 작성</button>
+          </div>
+          <p className="help">
+            {geminiEnabled === null && '서버 연결 상태를 확인 중입니다.'}
+            {geminiEnabled === false && '서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정).'}
+            {geminiEnabled === true && 'Gemini 설정이 감지되었습니다. 문서 작성이 가능합니다.'}
+          </p>
+          <textarea
+            value={instruction}
+            onChange={(e) => setInstruction(e.target.value)}
+            placeholder="수정 요청/추가 지침을 입력하세요 (예: 300자 이내 요약, 공손한 어조로 재작성 등)"
+            className="textarea-sm mt-8"
+          />
+          <textarea
+            value={composedText}
+            onChange={(e) => setComposedText(e.target.value)}
+            placeholder="선택한 형식과 숨은 프롬프트에 따라 생성된 문서를 편집할 수 있습니다."
+            className="textarea-lg mt-8"
+          />
+          <div className="controls mt-8">
+            <button className="btn" onClick={saveDocument}>저장</button>
+            <button className="btn btn-outline" onClick={() => setComposedText('')}>삭제(편집중인 문서)</button>
+          </div>
+        </section>
+
+        <section className="section">
+          <h2 className="section-title">3) 문자(SMS) 발송</h2>
+          <div className="controls">
+            <input
+              value={phoneNumber}
+              onChange={(e) => setPhoneNumber(e.target.value)}
+              placeholder="수신자 번호(+82...)"
+              className="grow"
+            />
+            <button className="btn btn-primary" onClick={sendSMS} disabled={twilioEnabled === false}>문자 발송(Twilio)</button>
+            <button className="btn" onClick={openSmsApp}>휴대폰 문자앱으로 열기</button>
+          </div>
+          <p className="help">
+            {twilioEnabled === null && '서버 연결 상태를 확인 중입니다.'}
+            {twilioEnabled === false && '서버에 Twilio 설정이 없습니다(.env 설정 필요).'}
+            {twilioEnabled === true && 'Twilio 설정이 감지되었습니다. 문자 발송이 가능합니다.'}
+          </p>
+        </section>
+
+        <section className="section">
+          <h2 className="section-title">저장된 문서</h2>
+          {savedDocs.length === 0 ? (
+            <p className="help">저장된 문서가 없습니다.</p>
+          ) : (
+            <ul className="list">
+              {savedDocs.map(doc => (
+                <li key={doc.id} className="list-item">
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <strong>[{formatOptions.find(f => f.id === doc.formatId)?.label}]</strong>
+                    <span className="help">{new Date(doc.createdAt).toLocaleString()} — {doc.title}</span>
+                  </div>
+                  <div className="list-actions">
+                    <button className="btn" onClick={() => loadDocument(doc.id)}>불러와 편집</button>
+                    <button className="btn btn-outline" onClick={() => deleteDocument(doc.id)}>삭제</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </main>
+    </>
   )
 }
 
