@@ -306,6 +306,9 @@ function App() {
             </button>
             <button className="btn" onClick={clearTranscript}>초기화</button>
           </div>
+          <p className="help">
+            <Mic size={14} /> 마이크 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 녹음 중에는 텍스트가 실시간으로 누적됩니다.
+          </p>
           <textarea
             value={transcript}
             onChange={(e) => setTranscript(e.target.value)}
