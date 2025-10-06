@@ -34,6 +34,14 @@ function App() {
   const smsRef = useRef<HTMLDivElement | null>(null)
   const savedRef = useRef<HTMLDivElement | null>(null)
   const wakeLockRef = useRef<any>(null)
+  // 음성 인식 재시작 루프를 방지하기 위한 재시도 정보
+  const restartInfoRef = useRef<{ count: number; last: number }>({ count: 0, last: 0 })
+  // 중복 재시작 예약을 방지하기 위한 타이머 핸들
+  const restartTimeoutRef = useRef<number | null>(null)
+  // 말이 멈춘 이후 자동 종료/재시작을 지연시키기 위한 설정 및 상태
+  const SILENCE_RESTART_DELAY_MS = 30000 // 30초
+  const silenceTimeoutRef = useRef<number | null>(null)
+  const lastSpeechTsRef = useRef<number>(Date.now())
   const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
 
   useEffect(() => {
@@ -108,6 +116,29 @@ function App() {
     wakeLockRef.current = null
   }
 
+  // 재시작 카운터 초기화
+  const resetRestartInfo = () => {
+    restartInfoRef.current.count = 0
+    restartInfoRef.current.last = Date.now()
+    // 재시작 예약이 남아있으면 즉시 해제
+    if (restartTimeoutRef.current) {
+      clearTimeout(restartTimeoutRef.current)
+      restartTimeoutRef.current = null
+    }
+    // 침묵 타이머도 클리어
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current)
+      silenceTimeoutRef.current = null
+    }
+  }
+
+  const clearSilenceTimeout = () => {
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current)
+      silenceTimeoutRef.current = null
+    }
+  }
+
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === 'visible' && isRecordingRef.current) {
@@ -134,17 +165,66 @@ function App() {
     try { (recognition as any).maxAlternatives = 1 } catch {}
     isRecordingRef.current = true
 
-    const attemptRestart = () => {
+    const attemptRestart = (cause: 'error' | 'silence' = 'error') => {
       if (!isRecordingRef.current) return
-      try {
-        recognition.start()
-      } catch {
-        setTimeout(() => {
-          if (isRecordingRef.current) {
-            try { recognition.start() } catch {}
-          }
-        }, 300)
+      const now = Date.now()
+      // 짧은 시간 내 연속 재시작이 발생하면 카운트 증가
+      if (now - restartInfoRef.current.last < 300) {
+        restartInfoRef.current.count += 1
+      } else {
+        restartInfoRef.current.count = 0
       }
+      restartInfoRef.current.last = now
+
+      // 재시작이 과도하게 반복되면 중단하여 루프 방지
+      if (restartInfoRef.current.count >= 5) {
+        console.warn('음성 인식이 반복 종료되어 재시작을 중단합니다.')
+        alert('마이크 입력이 지속적으로 종료되어 녹음을 중지합니다. 권한/소음/네트워크 상태를 확인해 주세요.')
+        stopRecording()
+        return
+      }
+
+      if (cause === 'silence') {
+        // 침묵으로 인한 자동 종료/재시작은 30초 지연
+        if (silenceTimeoutRef.current) return
+        const delay = SILENCE_RESTART_DELAY_MS
+        silenceTimeoutRef.current = window.setTimeout(() => {
+          silenceTimeoutRef.current = null
+          if (!isRecordingRef.current) return
+          try {
+            recognition.start()
+          } catch {
+            // 실패 시 짧은 재시도 1회
+            restartTimeoutRef.current = window.setTimeout(() => {
+              restartTimeoutRef.current = null
+              if (isRecordingRef.current) {
+                try { recognition.start() } catch {}
+              }
+            }, 500)
+          }
+        }, delay)
+        return
+      }
+
+      // 오류로 인한 재시작은 점진적 백오프(최대 3초)
+      if (restartTimeoutRef.current) return
+      const delay = Math.min(200 + restartInfoRef.current.count * 400, 3000)
+      restartTimeoutRef.current = window.setTimeout(() => {
+        restartTimeoutRef.current = null
+        if (!isRecordingRef.current) return
+        try {
+          recognition.start()
+        } catch {
+          // 재시작 실패 시 소폭 지연 후 1회 추가 시도
+          const retryDelay = 400
+          restartTimeoutRef.current = window.setTimeout(() => {
+            restartTimeoutRef.current = null
+            if (isRecordingRef.current) {
+              try { recognition.start() } catch {}
+            }
+          }, retryDelay)
+        }
+      }, delay)
     }
 
     let finalText = transcript
@@ -167,7 +247,7 @@ function App() {
       console.error('Recognition error:', e)
       const restartable = ['no-speech', 'network', 'aborted', 'audio-capture']
       if (isRecordingRef.current && restartable.includes(e?.error)) {
-        setTimeout(attemptRestart, 200)
+        attemptRestart('error')
       }
       if (e?.error === 'not-allowed') {
         alert('마이크 권한이 허용되지 않았습니다. 브라우저/OS 권한을 확인해 주세요.')
@@ -177,21 +257,15 @@ function App() {
 
     // 일부 브라우저는 음성/사운드/오디오 스트림 종료 이벤트를 별도로 발생시킵니다.
     // 짧은 끊김 시 자동 재시작을 시도해 간극을 최소화합니다.
-    ;(recognition as any).onspeechend = () => { if (isRecordingRef.current) setTimeout(attemptRestart, 200) }
-    ;(recognition as any).onsoundend = () => { if (isRecordingRef.current) setTimeout(attemptRestart, 200) }
-    ;(recognition as any).onaudioend = () => { if (isRecordingRef.current) setTimeout(attemptRestart, 200) }
+    ;(recognition as any).onspeechstart = () => { lastSpeechTsRef.current = Date.now(); clearSilenceTimeout() }
+    ;(recognition as any).onspeechend = () => { if (isRecordingRef.current) attemptRestart('silence') }
+    ;(recognition as any).onsoundend = () => { if (isRecordingRef.current) attemptRestart('silence') }
+    ;(recognition as any).onaudioend = () => { if (isRecordingRef.current) attemptRestart('silence') }
 
     recognition.onend = () => {
       if (isRecordingRef.current) {
-        try {
-          recognition.start()
-        } catch {
-          setTimeout(() => {
-            if (isRecordingRef.current) {
-              try { recognition.start() } catch {}
-            }
-          }, 500)
-        }
+        // onend가 침묵으로 이어지는 경우 30초 지연 재시작
+        attemptRestart('silence')
       } else {
         setIsRecording(false)
         recognitionRef.current = null
@@ -199,7 +273,15 @@ function App() {
     }
 
     // 시작 시 Wake Lock 재획득 시도(지원 기기에서 화면 꺼짐 방지)
-    ;(recognition as any).onstart = () => { try { acquireWakeLock() } catch {} }
+    ;(recognition as any).onstart = () => {
+      try { acquireWakeLock() } catch {}
+      resetRestartInfo()
+      // 모바일에서 연속 모드가 더 오래 유지되도록 설정
+      try {
+        ;(recognition as any).continuous = true
+        ;(recognition as any).interimResults = true
+      } catch {}
+    }
 
     recognitionRef.current = recognition
     recognition.start()
@@ -216,6 +298,15 @@ function App() {
     isRecordingRef.current = false
     setIsRecording(false)
     awaitWakeRelease()
+    // 예약된 재시작 작업이 있으면 취소
+    if (restartTimeoutRef.current) {
+      clearTimeout(restartTimeoutRef.current)
+      restartTimeoutRef.current = null
+    }
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current)
+      silenceTimeoutRef.current = null
+    }
   }
 
   const clearTranscript = () => {
