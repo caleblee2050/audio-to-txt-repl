@@ -24,6 +24,7 @@ function App() {
   const [twilioEnabled, setTwilioEnabled] = useState<boolean | null>(null)
   const [geminiEnabled, setGeminiEnabled] = useState<boolean | null>(null)
   const [instruction, setInstruction] = useState('')
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const recognitionRef = useRef<any>(null)
   const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
 
@@ -56,6 +57,18 @@ function App() {
     }
     checkHealth()
   }, [])
+
+  // 테마 초기화 및 저장
+  useEffect(() => {
+    const saved = localStorage.getItem('theme') as 'dark' | 'light' | null
+    const initial = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+    setTheme(initial)
+  }, [])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme === 'light' ? 'light' : ''
+    localStorage.setItem('theme', theme)
+  }, [theme])
 
   // 컴포넌트 언마운트 시 녹음 강제 종료(잔여 이벤트로 재시작되는 문제 예방)
   useEffect(() => {
@@ -241,21 +254,29 @@ function App() {
     <>
       <header className="topbar">
         <div className="topbar-inner container">
-          <div className="brand">Audio → Text Composer</div>
+          <div className="brand">🎙️ Audio → Text Composer</div>
           <span className="subtitle">스마트폰 최적화 · 실시간 음성 정리</span>
           <span className="grow" />
-          {geminiEnabled === true && <span className="badge">Gemini OK</span>}
-          {geminiEnabled === false && <span className="badge">Gemini 설정 필요</span>}
-          {twilioEnabled === true && <span className="badge">Twilio OK</span>}
-          {twilioEnabled === false && <span className="badge">Twilio 설정 필요</span>}
+          {geminiEnabled === true && <span className="badge success">Gemini OK</span>}
+          {geminiEnabled === false && <span className="badge danger">Gemini 설정 필요</span>}
+          {twilioEnabled === true && <span className="badge success">Twilio OK</span>}
+          {twilioEnabled === false && <span className="badge danger">Twilio 설정 필요</span>}
+          <button
+            className="btn"
+            aria-label="테마 토글"
+            title="테마 토글"
+            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+          >
+            {theme === 'light' ? '🌙 다크' : '☀️ 라이트'}
+          </button>
         </div>
       </header>
 
       <main className="container">
-        <h1 style={{ fontSize: 22, margin: '16px 0' }}>음성→텍스트 정리 및 문자 발송</h1>
+        <h1 className="app-title">음성→텍스트 정리 및 문자 발송</h1>
 
         <section className="section">
-          <h2 className="section-title">1) 음성 인식 (정지까지 연속 기록)</h2>
+          <h2 className="section-title">🎙️ 1) 음성 인식 (정지까지 연속 기록)</h2>
           <div className="controls">
             <button
               aria-label="녹음 토글"
@@ -276,7 +297,7 @@ function App() {
         </section>
 
         <section className="section">
-          <h2 className="section-title">2) 문서 형식 선택 및 작성</h2>
+          <h2 className="section-title">🧠 2) 문서 형식 선택 및 작성</h2>
           <div className="controls">
             <label className="grow">
               형식
@@ -312,12 +333,15 @@ function App() {
         </section>
 
         <section className="section">
-          <h2 className="section-title">3) 문자(SMS) 발송</h2>
+          <h2 className="section-title">✉️ 3) 문자(SMS) 발송</h2>
           <div className="controls">
             <input
               value={phoneNumber}
               onChange={(e) => setPhoneNumber(e.target.value)}
               placeholder="수신자 번호(+82...)"
+              type="tel"
+              inputMode="tel"
+              pattern="[0-9+\-() ]*"
               className="grow"
             />
             <button className="btn btn-primary" onClick={sendSMS} disabled={twilioEnabled === false}>문자 발송(Twilio)</button>
@@ -331,7 +355,7 @@ function App() {
         </section>
 
         <section className="section">
-          <h2 className="section-title">저장된 문서</h2>
+          <h2 className="section-title">📁 저장된 문서</h2>
           {savedDocs.length === 0 ? (
             <p className="help">저장된 문서가 없습니다.</p>
           ) : (
