@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Mic, Square, Brain, MessageSquare, Folder, CheckCircle2, AlertCircle } from 'lucide-react'
 import './App.css'
 
 type FormatId = 'official' | 'minutes' | 'summary' | 'blog' | 'smsNotice'
@@ -24,7 +25,6 @@ function App() {
   const [twilioEnabled, setTwilioEnabled] = useState<boolean | null>(null)
   const [geminiEnabled, setGeminiEnabled] = useState<boolean | null>(null)
   const [instruction, setInstruction] = useState('')
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const [activeTab, setActiveTab] = useState<'record' | 'compose' | 'sms' | 'saved'>('record')
   const recognitionRef = useRef<any>(null)
   const recordRef = useRef<HTMLDivElement | null>(null)
@@ -63,17 +63,10 @@ function App() {
     checkHealth()
   }, [])
 
-  // 테마 초기화 및 저장
+  // 라이트 모드 제거: 기본 다크 모드 고정
   useEffect(() => {
-    const saved = localStorage.getItem('theme') as 'dark' | 'light' | null
-    const initial = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
-    setTheme(initial)
+    document.documentElement.dataset.theme = ''
   }, [])
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme === 'light' ? 'light' : ''
-    localStorage.setItem('theme', theme)
-  }, [theme])
 
   const scrollTo = (ref: React.RefObject<HTMLDivElement>, tab: 'record' | 'compose' | 'sms' | 'saved') => {
     try {
@@ -266,21 +259,32 @@ function App() {
     <>
       <header className="topbar">
         <div className="topbar-inner container">
-          <div className="brand">🎙️ Audio → Text Composer</div>
+          <div className="brand" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Mic size={18} />
+            Audio → Text Composer
+          </div>
           <span className="subtitle">스마트폰 최적화 · 실시간 음성 정리</span>
           <span className="grow" />
-          {geminiEnabled === true && <span className="badge success">Gemini OK</span>}
-          {geminiEnabled === false && <span className="badge danger">Gemini 설정 필요</span>}
-          {twilioEnabled === true && <span className="badge success">Twilio OK</span>}
-          {twilioEnabled === false && <span className="badge danger">Twilio 설정 필요</span>}
-          <button
-            className="btn"
-            aria-label="테마 토글"
-            title="테마 토글"
-            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-          >
-            {theme === 'light' ? '🌙 다크' : '☀️ 라이트'}
-          </button>
+          {geminiEnabled === true && (
+            <span className="badge success" aria-label="Gemini 준비 완료">
+              <CheckCircle2 size={14} /> Gemini OK
+            </span>
+          )}
+          {geminiEnabled === false && (
+            <span className="badge danger" aria-label="Gemini 설정 필요">
+              <AlertCircle size={14} /> Gemini 설정 필요
+            </span>
+          )}
+          {twilioEnabled === true && (
+            <span className="badge success" aria-label="Twilio 준비 완료">
+              <CheckCircle2 size={14} /> Twilio OK
+            </span>
+          )}
+          {twilioEnabled === false && (
+            <span className="badge danger" aria-label="Twilio 설정 필요">
+              <AlertCircle size={14} /> Twilio 설정 필요
+            </span>
+          )}
         </div>
       </header>
 
@@ -288,7 +292,9 @@ function App() {
         <h1 className="app-title">음성→텍스트 정리 및 문자 발송</h1>
 
         <section ref={recordRef} className="section" id="record">
-          <h2 className="section-title">🎙️ 1) 음성 인식 (정지까지 연속 기록)</h2>
+          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Mic size={18} /> 1) 음성 인식 (정지까지 연속 기록)
+          </h2>
           <div className="controls">
             <button
               aria-label="녹음 토글"
@@ -296,7 +302,7 @@ function App() {
               onClick={() => (isRecording ? stopRecording() : startRecording())}
               className={`icon-btn ${isRecording ? 'recording' : ''}`}
             >
-              {isRecording ? '⏹️' : '🎙️'}
+              {isRecording ? <Square size={28} /> : <Mic size={28} />}
             </button>
             <button className="btn" onClick={clearTranscript}>초기화</button>
           </div>
@@ -309,7 +315,9 @@ function App() {
         </section>
 
         <section ref={composeRef} className="section" id="compose">
-          <h2 className="section-title">🧠 2) 문서 형식 선택 및 작성</h2>
+          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Brain size={18} /> 2) 문서 형식 선택 및 작성
+          </h2>
           <div className="controls">
             <label className="grow">
               형식
@@ -345,7 +353,9 @@ function App() {
         </section>
 
         <section ref={smsRef} className="section" id="sms">
-          <h2 className="section-title">✉️ 3) 문자(SMS) 발송</h2>
+          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <MessageSquare size={18} /> 3) 문자(SMS) 발송
+          </h2>
           <div className="controls">
             <input
               value={phoneNumber}
@@ -367,9 +377,13 @@ function App() {
         </section>
 
         <section ref={savedRef} className="section" id="saved">
-          <h2 className="section-title">📁 저장된 문서</h2>
+          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Folder size={18} /> 저장된 문서
+          </h2>
           {savedDocs.length === 0 ? (
-            <p className="help">저장된 문서가 없습니다.</p>
+            <div className="empty-state">
+              <Folder size={16} /> 저장된 문서가 없습니다. 문서를 작성 후 저장해 보세요.
+            </div>
           ) : (
             <ul className="list">
               {savedDocs.map(doc => (
@@ -395,7 +409,7 @@ function App() {
             onClick={() => scrollTo(recordRef, 'record')}
             aria-label="녹음 섹션으로 이동"
           >
-            <span>🎙️</span>
+            <Mic size={18} />
             <span className="tab-label">녹음</span>
           </button>
           <button
@@ -403,7 +417,7 @@ function App() {
             onClick={() => scrollTo(composeRef, 'compose')}
             aria-label="문서 섹션으로 이동"
           >
-            <span>🧠</span>
+            <Brain size={18} />
             <span className="tab-label">문서</span>
           </button>
           <button
@@ -411,7 +425,7 @@ function App() {
             onClick={() => scrollTo(smsRef, 'sms')}
             aria-label="문자 섹션으로 이동"
           >
-            <span>✉️</span>
+            <MessageSquare size={18} />
             <span className="tab-label">문자</span>
           </button>
           <button
@@ -419,7 +433,7 @@ function App() {
             onClick={() => scrollTo(savedRef, 'saved')}
             aria-label="저장 문서 섹션으로 이동"
           >
-            <span>📁</span>
+            <Folder size={18} />
             <span className="tab-label">저장</span>
           </button>
         </div>

@@ -59,6 +59,7 @@ a:hover { color: var(--primary-600); }
 .subtitle { color: var(--muted); font-size: 12px; }
 
 .section { margin: 16px 0; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); }
+.section { animation: fadeInUp 240ms ease both; }
 .section-title { margin: 0 0 12px; font-size: 18px; }
 
 .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -102,7 +103,9 @@ textarea.textarea-lg { min-height: 220px; }
   border: 1px solid var(--border);
   background: var(--surface-2);
   font-size: 28px;
-  line-height: 72px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .icon-btn.recording { background: var(--danger); color: white; border-color: transparent; animation: pulse 1.2s ease-in-out infinite; }
 
@@ -111,6 +114,7 @@ textarea.textarea-lg { min-height: 220px; }
 .list { list-style: none; padding: 0; margin: 0; }
 .list-item { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 8px; }
 .list-actions { display: flex; gap: 8px; margin-top: 8px; }
+.empty-state { display: flex; align-items: center; gap: 8px; padding: 12px; border-radius: 12px; border: 1px dashed var(--border); background: var(--surface); color: var(--muted); font-size: 13px; }
 
 /* Status badges */
 .badge { display: inline-block; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); font-size: 12px; }
@@ -152,20 +156,22 @@ textarea.textarea-lg { min-height: 220px; }
 .tab-label { font-size: 11px; color: var(--muted); }
 .tab-btn.active .tab-label { color: #fff; }
 
-/* Theme: Light overrides */
-html[data-theme="light"] {
-  --bg: #f7f9fb;
-  --surface: #ffffff;
-  --surface-2: #f3f6fa;
-  --text: #0c1a24;
-  --muted: #4b6072;
-  --border: #dbe4ea;
-  --primary: #3f73fb;
-  --primary-600: #245de8;
-  --danger: #d9365a;
-  --success: #16a085;
-  --shadow: 0 8px 20px rgba(0,0,0,0.06);
+/* Accessibility focus styles */
+.btn:focus-visible,
+.icon-btn:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(91,140,255,0.2);
 }
+
+/* Micro-interactions */
+.btn, .tab-btn, .icon-btn {
+  transition: transform 120ms ease, background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+input, select, textarea { transition: border-color 160ms ease, background 160ms ease; }
 
 /* Typography helpers */
 .app-title { font-size: 22px; margin: 16px 0; }
@@ -177,3 +183,14 @@ html[data-theme="light"] {
   100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,77,109,0); }
 }
 .container.main { padding-bottom: var(--bottom-nav-height); }
+
+@keyframes fadeInUp {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn.recording { animation: none; }
+  .section { animation: none; }
+}
