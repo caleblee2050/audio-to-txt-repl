@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Mic, Square, Brain, MessageSquare, Folder, CheckCircle2, AlertCircle } from 'lucide-react'
+import { Mic, Square, Brain, MessageSquare, Folder, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
 import './App.css'
 
 type FormatId = 'official' | 'minutes' | 'summary' | 'blog' | 'smsNotice'
@@ -26,11 +26,14 @@ function App() {
   const [geminiEnabled, setGeminiEnabled] = useState<boolean | null>(null)
   const [instruction, setInstruction] = useState('')
   const [activeTab, setActiveTab] = useState<'record' | 'compose' | 'sms' | 'saved'>('record')
+  const [isComposing, setIsComposing] = useState(false)
+  const [isSending, setIsSending] = useState(false)
   const recognitionRef = useRef<any>(null)
   const recordRef = useRef<HTMLDivElement | null>(null)
   const composeRef = useRef<HTMLDivElement | null>(null)
   const smsRef = useRef<HTMLDivElement | null>(null)
   const savedRef = useRef<HTMLDivElement | null>(null)
+  const wakeLockRef = useRef<any>(null)
   const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
 
   useEffect(() => {
@@ -68,7 +71,7 @@ function App() {
     document.documentElement.dataset.theme = ''
   }, [])
 
-  const scrollTo = (ref: React.RefObject<HTMLDivElement>, tab: 'record' | 'compose' | 'sms' | 'saved') => {
+  const scrollTo = (ref: React.RefObject<HTMLDivElement | null>, tab: 'record' | 'compose' | 'sms' | 'saved') => {
     try {
       ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       setActiveTab(tab)
@@ -82,8 +85,37 @@ function App() {
         const rec = recognitionRef.current
         if (rec) rec.stop()
         recognitionRef.current = null
+        try { awaitWakeRelease() } catch {}
       } catch {}
     }
+  }, [])
+
+  const acquireWakeLock = async () => {
+    try {
+      const navAny = navigator as any
+      if (navAny?.wakeLock && !wakeLockRef.current) {
+        const sentinel = await navAny.wakeLock.request('screen')
+        wakeLockRef.current = sentinel
+        sentinel.addEventListener?.('release', () => { wakeLockRef.current = null })
+      }
+    } catch (e) {
+      console.warn('wakeLock request failed:', e)
+    }
+  }
+
+  const awaitWakeRelease = async () => {
+    try { await wakeLockRef.current?.release?.() } catch {}
+    wakeLockRef.current = null
+  }
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible' && isRecordingRef.current) {
+        acquireWakeLock()
+      }
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
   const startRecording = async () => {
@@ -98,7 +130,22 @@ function App() {
     recognition.continuous = true
     recognition.interimResults = true
     recognition.lang = 'ko-KR'
+    // 일부 기기에서 대안 결과가 많으면 지연이 늘어나는 문제가 있어 1로 제한
+    try { (recognition as any).maxAlternatives = 1 } catch {}
     isRecordingRef.current = true
+
+    const attemptRestart = () => {
+      if (!isRecordingRef.current) return
+      try {
+        recognition.start()
+      } catch {
+        setTimeout(() => {
+          if (isRecordingRef.current) {
+            try { recognition.start() } catch {}
+          }
+        }, 300)
+      }
+    }
 
     let finalText = transcript
     recognition.onresult = (event: any) => {
@@ -118,7 +165,21 @@ function App() {
 
     recognition.onerror = (e: any) => {
       console.error('Recognition error:', e)
+      const restartable = ['no-speech', 'network', 'aborted', 'audio-capture']
+      if (isRecordingRef.current && restartable.includes(e?.error)) {
+        setTimeout(attemptRestart, 200)
+      }
+      if (e?.error === 'not-allowed') {
+        alert('마이크 권한이 허용되지 않았습니다. 브라우저/OS 권한을 확인해 주세요.')
+        stopRecording()
+      }
     }
+
+    // 일부 브라우저는 음성/사운드/오디오 스트림 종료 이벤트를 별도로 발생시킵니다.
+    // 짧은 끊김 시 자동 재시작을 시도해 간극을 최소화합니다.
+    ;(recognition as any).onspeechend = () => { if (isRecordingRef.current) setTimeout(attemptRestart, 200) }
+    ;(recognition as any).onsoundend = () => { if (isRecordingRef.current) setTimeout(attemptRestart, 200) }
+    ;(recognition as any).onaudioend = () => { if (isRecordingRef.current) setTimeout(attemptRestart, 200) }
 
     recognition.onend = () => {
       if (isRecordingRef.current) {
@@ -137,9 +198,13 @@ function App() {
       }
     }
 
+    // 시작 시 Wake Lock 재획득 시도(지원 기기에서 화면 꺼짐 방지)
+    ;(recognition as any).onstart = () => { try { acquireWakeLock() } catch {} }
+
     recognitionRef.current = recognition
     recognition.start()
     setIsRecording(true)
+    acquireWakeLock()
   }
 
   const stopRecording = () => {
@@ -150,10 +215,17 @@ function App() {
     }
     isRecordingRef.current = false
     setIsRecording(false)
+    awaitWakeRelease()
   }
 
   const clearTranscript = () => {
     setTranscript('')
+  }
+
+  const isValidPhone = (p: string) => {
+    const s = p.trim()
+    // 간단한 검증: E.164(+숫자, 7~15자리) 또는 국내 0으로 시작하는 번호 대략적 대응
+    return /^(\+?\d{7,15}|0\d{8,11})$/.test(s)
   }
 
   const composeWithGemini = async () => {
@@ -166,6 +238,7 @@ function App() {
       return
     }
     try {
+      setIsComposing(true)
       const resp = await fetch(`${API_BASE}/api/compose`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -176,6 +249,8 @@ function App() {
       setComposedText(data.text || '')
     } catch (err: any) {
       alert('문서 생성 중 오류: ' + (err?.message || String(err)))
+    } finally {
+      setIsComposing(false)
     }
   }
 
@@ -208,6 +283,17 @@ function App() {
     }
   }
 
+  const copyDocument = async (id: string) => {
+    const doc = savedDocs.find(d => d.id === id)
+    if (!doc) return
+    try {
+      await navigator.clipboard.writeText(doc.content)
+      alert('문서 내용이 클립보드에 복사되었습니다.')
+    } catch (e: any) {
+      alert('복사 실패: ' + (e?.message || String(e)))
+    }
+  }
+
   const sendSMS = async () => {
     if (!twilioEnabled) {
       alert('서버에 Twilio 설정이 없습니다. .env를 설정해 주세요.')
@@ -218,11 +304,12 @@ function App() {
       alert('문자 내용이 없습니다. 먼저 내용을 작성해 주세요.')
       return
     }
-    if (!phoneNumber.trim()) {
-      alert('수신자 번호를 입력해 주세요.')
+    if (!isValidPhone(phoneNumber)) {
+      alert('유효한 수신자 번호를 입력해 주세요. 예: +821012345678')
       return
     }
     try {
+      setIsSending(true)
       const resp = await fetch(`${API_BASE}/api/sms/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -233,6 +320,8 @@ function App() {
       alert('문자 발송 완료: ' + data.sid)
     } catch (err: any) {
       alert('문자 발송 오류: ' + (err?.message || String(err)))
+    } finally {
+      setIsSending(false)
     }
   }
 
@@ -243,8 +332,8 @@ function App() {
       alert('문자 내용이 없습니다. 먼저 내용을 작성해 주세요.')
       return
     }
-    if (!phoneNumber.trim()) {
-      alert('수신자 번호를 입력해 주세요.')
+    if (!isValidPhone(phoneNumber)) {
+      alert('유효한 수신자 번호를 입력해 주세요. 예: +821012345678')
       return
     }
     const uri = `sms:${encodeURIComponent(phoneNumber)}?body=${encodeURIComponent(body)}`
@@ -295,17 +384,20 @@ function App() {
           <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Mic size={18} /> 1) 음성 인식 (정지까지 연속 기록)
           </h2>
-          <div className="controls">
-            <button
-              aria-label="녹음 토글"
-              title={isRecording ? '정지' : '녹음 시작'}
-              onClick={() => (isRecording ? stopRecording() : startRecording())}
-              className={`icon-btn ${isRecording ? 'recording' : ''}`}
-            >
-              {isRecording ? <Square size={28} /> : <Mic size={28} />}
-            </button>
-            <button className="btn" onClick={clearTranscript}>초기화</button>
-          </div>
+        <div className="controls">
+          <button
+            aria-label="녹음 토글"
+            title={isRecording ? '정지' : '녹음 시작'}
+            onClick={() => (isRecording ? stopRecording() : startRecording())}
+            className={`icon-btn ${isRecording ? 'recording' : ''}`}
+          >
+            {isRecording ? <Square size={28} /> : <Mic size={28} />}
+          </button>
+          <button className="btn" onClick={clearTranscript}>초기화</button>
+        </div>
+        {isRecording && (navigator as any)?.wakeLock && (
+          <p className="help"><AlertCircle size={14} /> 녹음 중 화면 꺼짐 방지 활성(지원 기기). 화면을 켠 상태에서 사용하세요.</p>
+        )}
           <p className="help">
             <Mic size={14} /> 마이크 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 녹음 중에는 텍스트가 실시간으로 누적됩니다.
           </p>
@@ -330,7 +422,9 @@ function App() {
                 ))}
               </select>
             </label>
-            <button className="btn btn-primary" onClick={composeWithGemini} disabled={geminiEnabled === false}>지침대로 문서 작성</button>
+            <button className="btn btn-primary" onClick={composeWithGemini} disabled={geminiEnabled === false || isComposing} aria-busy={isComposing}>
+              {isComposing ? (<><Loader2 size={16} /> 작성 중...</>) : '지침대로 문서 작성'}
+            </button>
           </div>
           <p className="help">
             {geminiEnabled === null && (<><AlertCircle size={14} /> 서버 연결 상태를 확인 중입니다.</>)}
@@ -369,9 +463,12 @@ function App() {
               pattern="[0-9+\-() ]*"
               className="grow"
             />
-            <button className="btn btn-primary" onClick={sendSMS} disabled={twilioEnabled === false}>문자 발송(Twilio)</button>
+            <button className="btn btn-primary" onClick={sendSMS} disabled={twilioEnabled === false || isSending} aria-busy={isSending}>
+              {isSending ? (<><Loader2 size={16} /> 발송 중...</>) : '문자 발송(Twilio)'}
+            </button>
             <button className="btn" onClick={openSmsApp}>휴대폰 문자앱으로 열기</button>
           </div>
+          <p className="help"><MessageSquare size={14} /> 국제번호 형식 예시: +821012345678</p>
           <p className="help">
             {twilioEnabled === null && (<><AlertCircle size={14} /> 서버 연결 상태를 확인 중입니다.</>)}
             {twilioEnabled === false && (<><AlertCircle size={14} /> 서버에 Twilio 설정이 없습니다(.env 설정 필요).</>)}
@@ -397,6 +494,7 @@ function App() {
                   </div>
                   <div className="list-actions">
                     <button className="btn" onClick={() => loadDocument(doc.id)}>불러와 편집</button>
+                    <button className="btn" onClick={() => copyDocument(doc.id)}>복사</button>
                     <button className="btn btn-outline" onClick={() => deleteDocument(doc.id)}>삭제</button>
                   </div>
                 </li>
