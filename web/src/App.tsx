@@ -246,8 +246,12 @@ function App() {
         if (result.isFinal) {
           finalText += (finalText ? '\n' : '') + text.trim()
           setTranscript(finalText)
+          // 발화가 감지되었으므로 무음 기준 시점을 현재로 갱신
+          lastSpeechTsRef.current = Date.now()
         } else {
           interim += text
+          // 임시 인식 결과도 발화로 간주하여 시점 갱신
+          if (interim) lastSpeechTsRef.current = Date.now()
         }
       }
       // 필요 시, 임시 텍스트를 화면에 표시하려면 상태로 관리 가능
