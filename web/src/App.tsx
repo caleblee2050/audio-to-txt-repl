@@ -39,7 +39,7 @@ function App() {
   // 중복 재시작 예약을 방지하기 위한 타이머 핸들
   const restartTimeoutRef = useRef<number | null>(null)
   // 말이 멈춘 이후 자동 종료 임계시간(무음 지속 시간)
-  const SILENCE_RESTART_DELAY_MS = 60000 // 60초
+  const SILENCE_RESTART_DELAY_MS = 600000 // 10분
   const silenceTimeoutRef = useRef<number | null>(null)
   const silenceWatcherRef = useRef<number | null>(null)
   const lastSpeechTsRef = useRef<number>(Date.now())
@@ -205,14 +205,20 @@ function App() {
       }
 
       if (cause === 'silence') {
-        // 침묵 이벤트 발생 시 즉시 종료하지 않고, 인식 엔진을 재시작하여 대기 유지
-        // 자동 종료는 별도의 watcher가 60초 경과를 감시하여 수행
         if (restartTimeoutRef.current) return
         restartTimeoutRef.current = window.setTimeout(() => {
           restartTimeoutRef.current = null
           if (!isRecordingRef.current) return
-          try { recognition.start() } catch {}
-        }, 200)
+          try {
+            recognition.start()
+          } catch (e) {
+            console.warn('Silence restart failed:', e)
+            // 1회 재시도
+            setTimeout(() => {
+              if (isRecordingRef.current) try { recognition.start() } catch {}
+            }, 500)
+          }
+        }, 500)
         return
       }
 
