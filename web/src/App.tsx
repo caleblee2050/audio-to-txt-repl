@@ -38,8 +38,8 @@ function App() {
   const restartInfoRef = useRef<{ count: number; last: number }>({ count: 0, last: 0 })
   // 중복 재시작 예약을 방지하기 위한 타이머 핸들
   const restartTimeoutRef = useRef<number | null>(null)
-  // 말이 멈춘 이후 자동 종료/재시작을 지연시키기 위한 설정 및 상태
-  const SILENCE_RESTART_DELAY_MS = 30000 // 30초
+  // 말이 멈춘 이후 자동 종료를 지연시키기 위한 설정 및 상태
+  const SILENCE_RESTART_DELAY_MS = 60000 // 60초
   const silenceTimeoutRef = useRef<number | null>(null)
   const lastSpeechTsRef = useRef<number>(Date.now())
   const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
@@ -185,23 +185,14 @@ function App() {
       }
 
       if (cause === 'silence') {
-        // 침묵으로 인한 자동 종료/재시작은 30초 지연
+        // 침묵 60초 경과 시 자동 종료
         if (silenceTimeoutRef.current) return
         const delay = SILENCE_RESTART_DELAY_MS
         silenceTimeoutRef.current = window.setTimeout(() => {
           silenceTimeoutRef.current = null
           if (!isRecordingRef.current) return
-          try {
-            recognition.start()
-          } catch {
-            // 실패 시 짧은 재시도 1회
-            restartTimeoutRef.current = window.setTimeout(() => {
-              restartTimeoutRef.current = null
-              if (isRecordingRef.current) {
-                try { recognition.start() } catch {}
-              }
-            }, 500)
-          }
+          // 재시작 대신 녹음을 자동 종료합니다.
+          stopRecording()
         }, delay)
         return
       }
@@ -264,7 +255,7 @@ function App() {
 
     recognition.onend = () => {
       if (isRecordingRef.current) {
-        // onend가 침묵으로 이어지는 경우 30초 지연 재시작
+        // onend가 침묵으로 이어지는 경우 60초 지연 자동 종료
         attemptRestart('silence')
       } else {
         setIsRecording(false)
@@ -291,12 +282,21 @@ function App() {
 
   const stopRecording = () => {
     const rec = recognitionRef.current
-    if (rec) {
-      rec.stop()
-      recognitionRef.current = null
-    }
+    // 재시작 루프를 방지하기 위해 먼저 플래그를 내리고 이벤트를 해제합니다.
     isRecordingRef.current = false
     setIsRecording(false)
+    if (rec) {
+      try {
+        rec.onend = null
+        rec.onerror = null
+        ;(rec as any).onspeechend = null
+        ;(rec as any).onsoundend = null
+        ;(rec as any).onaudioend = null
+      } catch {}
+      try { (rec as any).abort?.() } catch {}
+      try { rec.stop() } catch {}
+      recognitionRef.current = null
+    }
     awaitWakeRelease()
     // 예약된 재시작 작업이 있으면 취소
     if (restartTimeoutRef.current) {
