@@ -185,15 +185,31 @@ function App() {
       }
 
       if (cause === 'silence') {
-        // 침묵 60초 경과 시 자동 종료
-        if (silenceTimeoutRef.current) return
+        // 침묵이 감지되면 60초 후 자동 종료 타이머를 (재)설정하고,
+        // 인식 엔진은 즉시 재시작하여 계속 대기 상태를 유지합니다.
         const delay = SILENCE_RESTART_DELAY_MS
+        if (silenceTimeoutRef.current) {
+          clearTimeout(silenceTimeoutRef.current)
+          silenceTimeoutRef.current = null
+        }
         silenceTimeoutRef.current = window.setTimeout(() => {
           silenceTimeoutRef.current = null
           if (!isRecordingRef.current) return
-          // 재시작 대신 녹음을 자동 종료합니다.
           stopRecording()
         }, delay)
+
+        // 즉시(또는 짧은 지연 후) 재시작하여 계속 듣기 유지
+        try {
+          recognition.start()
+        } catch {
+          // 실패 시 짧은 재시도 1회
+          restartTimeoutRef.current = window.setTimeout(() => {
+            restartTimeoutRef.current = null
+            if (isRecordingRef.current) {
+              try { recognition.start() } catch {}
+            }
+          }, 300)
+        }
         return
       }
 
