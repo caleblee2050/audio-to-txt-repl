@@ -6,10 +6,10 @@ set -euo pipefail
 #   cd web
 #   ./deploy_cloud_run.sh
 # Optional env vars:
-#   SERVICE_NAME=aittx-service REGION=asia-northeast3 ./deploy_cloud_run.sh
+#   SERVICE_NAME=aittx-service REGION=asia-northeast1 ./deploy_cloud_run.sh
 
 SERVICE_NAME=${SERVICE_NAME:-aittx-service}
-REGION=${REGION:-asia-northeast3}
+REGION=${REGION:-asia-northeast1}
 
 echo "[deploy] Service: $SERVICE_NAME, Region: $REGION"
 

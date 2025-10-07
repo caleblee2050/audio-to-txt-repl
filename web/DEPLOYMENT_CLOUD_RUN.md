@@ -29,7 +29,7 @@ gcloud run deploy aittx-service \
   --allow-unauthenticated \
   --update-env-vars GOOGLE_API_KEY=YOUR_KEY,TWILIO_ACCOUNT_SID=SID,TWILIO_AUTH_TOKEN=TOKEN,TWILIO_PHONE_FROM=+8210XXXXXXX
 ```
-- `--region`: 서울 리전 사용 시 `asia-northeast3`를 고려하되, 커스텀 도메인 매핑 제한사항 때문에 `asia-northeast1`(도쿄) 등 사용을 권장할 수 있습니다.
+- `--region`: 커스텀 도메인 매핑은 `asia-northeast3`에서 제공되지 않으므로, `asia-northeast1`(도쿄)을 사용하세요.
 - `--allow-unauthenticated`: 공개 접근 허용
 - `--update-env-vars`: 운영 환경변수를 컨테이너에 주입 (로컬 `.env`는 VCS에서 제외됨)
 

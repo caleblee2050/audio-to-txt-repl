@@ -6,7 +6,7 @@
 - gcloud CLI 설치: https://cloud.google.com/sdk/docs/install
 - 로그인: `gcloud auth login`
 - 프로젝트 선택: `gcloud config set project <YOUR_PROJECT_ID>`
-- 리전 설정(서울 권장): `gcloud config set run/region asia-northeast3`
+- 리전 설정(도메인 매핑 지원 리전 권장): `gcloud config set run/region asia-northeast1`
 - 필수 API 활성화:
   - `gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com`
 - 결제 설정(미설정 시): Cloud Console → Billing → 프로젝트 연결
@@ -24,13 +24,13 @@
 - 터미널 작업 디렉토리: `cd web`
 - 간편 배포 스크립트 실행: `./deploy_cloud_run.sh`
   - 스크립트가 Vite 빌드 후 Cloud Run에 Dockerfile로 배포합니다.
-  - 기본 서비스명: `aittx-service`, 리전: `asia-northeast3`
+  - 기본 서비스명: `aittx-service`, 리전: `asia-northeast1`
   - `.env`가 있으면 환경변수를 자동 주입합니다.
 - 직접 명령으로 배포(원하면):
 ```
 gcloud run deploy aittx-service \
   --source . \
-  --region asia-northeast3 \
+  --region asia-northeast1 \
   --no-invoker-iam-check \
   --ingress all \
   --update-env-vars GOOGLE_API_KEY=<키>,TWILIO_ACCOUNT_SID=<SID>,TWILIO_AUTH_TOKEN=<TOKEN>,TWILIO_PHONE_FROM=<+8210…>

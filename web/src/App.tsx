@@ -38,9 +38,10 @@ function App() {
   const restartInfoRef = useRef<{ count: number; last: number }>({ count: 0, last: 0 })
   // 중복 재시작 예약을 방지하기 위한 타이머 핸들
   const restartTimeoutRef = useRef<number | null>(null)
-  // 말이 멈춘 이후 자동 종료를 지연시키기 위한 설정 및 상태
+  // 말이 멈춘 이후 자동 종료 임계시간(무음 지속 시간)
   const SILENCE_RESTART_DELAY_MS = 60000 // 60초
   const silenceTimeoutRef = useRef<number | null>(null)
+  const silenceWatcherRef = useRef<number | null>(null)
   const lastSpeechTsRef = useRef<number>(Date.now())
   const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
 
@@ -139,6 +140,25 @@ function App() {
     }
   }
 
+  const startSilenceWatcher = () => {
+    // 주기적으로 마지막 발화 시점과 현재 시간을 비교하여 무음 60초 초과 시 자동 종료
+    if (silenceWatcherRef.current) {
+      clearInterval(silenceWatcherRef.current)
+      silenceWatcherRef.current = null
+    }
+    silenceWatcherRef.current = window.setInterval(() => {
+      if (!isRecordingRef.current) {
+        clearInterval(silenceWatcherRef.current!)
+        silenceWatcherRef.current = null
+        return
+      }
+      const silenceFor = Date.now() - lastSpeechTsRef.current
+      if (silenceFor >= SILENCE_RESTART_DELAY_MS) {
+        stopRecording()
+      }
+    }, 1000)
+  }
+
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === 'visible' && isRecordingRef.current) {
@@ -185,31 +205,14 @@ function App() {
       }
 
       if (cause === 'silence') {
-        // 침묵이 감지되면 60초 후 자동 종료 타이머를 (재)설정하고,
-        // 인식 엔진은 즉시 재시작하여 계속 대기 상태를 유지합니다.
-        const delay = SILENCE_RESTART_DELAY_MS
-        if (silenceTimeoutRef.current) {
-          clearTimeout(silenceTimeoutRef.current)
-          silenceTimeoutRef.current = null
-        }
-        silenceTimeoutRef.current = window.setTimeout(() => {
-          silenceTimeoutRef.current = null
+        // 침묵 이벤트 발생 시 즉시 종료하지 않고, 인식 엔진을 재시작하여 대기 유지
+        // 자동 종료는 별도의 watcher가 60초 경과를 감시하여 수행
+        if (restartTimeoutRef.current) return
+        restartTimeoutRef.current = window.setTimeout(() => {
+          restartTimeoutRef.current = null
           if (!isRecordingRef.current) return
-          stopRecording()
-        }, delay)
-
-        // 즉시(또는 짧은 지연 후) 재시작하여 계속 듣기 유지
-        try {
-          recognition.start()
-        } catch {
-          // 실패 시 짧은 재시도 1회
-          restartTimeoutRef.current = window.setTimeout(() => {
-            restartTimeoutRef.current = null
-            if (isRecordingRef.current) {
-              try { recognition.start() } catch {}
-            }
-          }, 300)
-        }
+          try { recognition.start() } catch {}
+        }, 200)
         return
       }
 
@@ -275,9 +278,8 @@ function App() {
         recognitionRef.current = null
         return
       }
-      // 사용자 정지(수동) 상태가 아니라면 UI는 계속 '녹음 중'으로 유지
+      // 인식 엔진이 끝나도 대기 상태를 유지하도록 재시작을 시도
       setIsRecording(true)
-      // onend가 침묵으로 이어지는 경우 60초 지연 자동 종료 타이머만 설정하고 즉시 재시작으로 대기 유지
       attemptRestart('silence')
     }
 
@@ -295,6 +297,8 @@ function App() {
     recognitionRef.current = recognition
     recognition.start()
     setIsRecording(true)
+    lastSpeechTsRef.current = Date.now()
+    startSilenceWatcher()
     acquireWakeLock()
   }
 
@@ -324,6 +328,10 @@ function App() {
     if (silenceTimeoutRef.current) {
       clearTimeout(silenceTimeoutRef.current)
       silenceTimeoutRef.current = null
+    }
+    if (silenceWatcherRef.current) {
+      clearInterval(silenceWatcherRef.current)
+      silenceWatcherRef.current = null
     }
   }
 
