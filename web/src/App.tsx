@@ -269,8 +269,6 @@ function App() {
     // 짧은 끊김 시 자동 재시작을 시도해 간극을 최소화합니다.
     ;(recognition as any).onspeechstart = () => { lastSpeechTsRef.current = Date.now(); clearSilenceTimeout() }
     ;(recognition as any).onspeechend = () => { if (isRecordingRef.current) attemptRestart('silence') }
-    ;(recognition as any).onsoundend = () => { if (isRecordingRef.current) attemptRestart('silence') }
-    ;(recognition as any).onaudioend = () => { if (isRecordingRef.current) attemptRestart('silence') }
 
     recognition.onend = () => {
       if (!isRecordingRef.current) {
