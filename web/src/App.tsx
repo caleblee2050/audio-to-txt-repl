@@ -270,13 +270,15 @@ function App() {
     ;(recognition as any).onaudioend = () => { if (isRecordingRef.current) attemptRestart('silence') }
 
     recognition.onend = () => {
-      if (isRecordingRef.current) {
-        // onend가 침묵으로 이어지는 경우 60초 지연 자동 종료
-        attemptRestart('silence')
-      } else {
+      if (!isRecordingRef.current) {
         setIsRecording(false)
         recognitionRef.current = null
+        return
       }
+      // 사용자 정지(수동) 상태가 아니라면 UI는 계속 '녹음 중'으로 유지
+      setIsRecording(true)
+      // onend가 침묵으로 이어지는 경우 60초 지연 자동 종료 타이머만 설정하고 즉시 재시작으로 대기 유지
+      attemptRestart('silence')
     }
 
     // 시작 시 Wake Lock 재획득 시도(지원 기기에서 화면 꺼짐 방지)
