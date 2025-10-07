@@ -188,19 +188,19 @@ function App() {
     const attemptRestart = (cause: 'error' | 'silence' = 'error') => {
       if (!isRecordingRef.current) return
       const now = Date.now()
-      // 짧은 시간 내 연속 재시작이 발생하면 카운트 증가
-      if (now - restartInfoRef.current.last < 300) {
-        restartInfoRef.current.count += 1
+      const isBurst = now - restartInfoRef.current.last < 300
+      restartInfoRef.current.last = now
+      // 오류에 의한 재시작만 루프 카운트에 포함하고, 침묵에 의한 재시작은 카운트를 리셋합니다.
+      if (cause === 'error') {
+        restartInfoRef.current.count = isBurst ? restartInfoRef.current.count + 1 : 0
       } else {
         restartInfoRef.current.count = 0
       }
-      restartInfoRef.current.last = now
 
-      // 재시작이 과도하게 반복되면 중단하여 루프 방지
-      if (restartInfoRef.current.count >= 5) {
-        console.warn('음성 인식이 반복 종료되어 재시작을 중단합니다.')
-        alert('마이크 입력이 지속적으로 종료되어 녹음을 중지합니다. 권한/소음/네트워크 상태를 확인해 주세요.')
-        stopRecording()
+      // 오류로 인한 재시작이 과도하게 반복되면 재시도만 중단하고, 60초 자동 종료를 기다립니다.
+      if (cause === 'error' && restartInfoRef.current.count >= 5) {
+        console.warn('음성 인식 오류가 반복되어 재시작을 중단합니다. 60초 후 자동 종료됩니다.')
+        alert('마이크 입력이 불안정합니다. 재시도는 중단하고 60초 무음 후 자동 종료됩니다.')
         return
       }
 
