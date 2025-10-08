@@ -483,55 +483,7 @@ function App() {
     }
   }
 
-  const sendSMS = async () => {
-    if (!twilioEnabled) {
-      alert('서버에 Twilio 설정이 없습니다. .env를 설정해 주세요.')
-      return
-    }
-    const body = (composedText || transcript).trim()
-    if (!body) {
-      alert('문자 내용이 없습니다. 먼저 내용을 작성해 주세요.')
-      return
-    }
-    if (!isValidPhone(phoneNumber)) {
-      alert('유효한 수신자 번호를 입력해 주세요. 예: +821012345678')
-      return
-    }
-    try {
-      setIsSending(true)
-      const resp = await fetch(`${API_BASE}/api/sms/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: phoneNumber, message: body }),
-      })
-      const data = await resp.json()
-      if (!resp.ok) throw new Error(data?.error || 'SMS failed')
-      alert('문자 발송 완료: ' + data.sid)
-    } catch (err: any) {
-      alert('문자 발송 오류: ' + (err?.message || String(err)))
-    } finally {
-      setIsSending(false)
-    }
-  }
-
-  // 휴대폰 문자앱으로 열기 (모바일에서 즉시 발송)
-  const openSmsApp = () => {
-    const body = (composedText || transcript).trim()
-    if (!body) {
-      alert('문자 내용이 없습니다. 먼저 내용을 작성해 주세요.')
-      return
-    }
-    if (!isValidPhone(phoneNumber)) {
-      alert('유효한 수신자 번호를 입력해 주세요. 예: +821012345678')
-      return
-    }
-    const uri = `sms:${encodeURIComponent(phoneNumber)}?body=${encodeURIComponent(body)}`
-    try {
-      window.location.href = uri
-    } catch {
-      window.open(uri, '_blank')
-    }
-  }
+  // (문자 발송 기능 제거됨)
 
   return (
     <>
