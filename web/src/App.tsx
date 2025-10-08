@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Mic, Square, Brain, MessageSquare, Folder, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
+import { Mic, Square, Brain, Folder, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
 import './App.css'
 
 type FormatId = 'official' | 'minutes' | 'summary' | 'blog' | 'smsNotice'
@@ -20,18 +20,15 @@ function App() {
   const [transcript, setTranscript] = useState('')
   const [formatId, setFormatId] = useState<FormatId>('summary')
   const [composedText, setComposedText] = useState('')
-  const [phoneNumber, setPhoneNumber] = useState('')
   const [savedDocs, setSavedDocs] = useState<SavedDoc[]>([])
-  const [twilioEnabled, setTwilioEnabled] = useState<boolean | null>(null)
   const [geminiEnabled, setGeminiEnabled] = useState<boolean | null>(null)
   const [instruction, setInstruction] = useState('')
-  const [activeTab, setActiveTab] = useState<'record' | 'compose' | 'sms' | 'saved'>('record')
+  const [activeTab, setActiveTab] = useState<'record' | 'compose' | 'stt' | 'saved'>('record')
   const [isComposing, setIsComposing] = useState(false)
-  const [isSending, setIsSending] = useState(false)
   const recognitionRef = useRef<any>(null)
   const recordRef = useRef<HTMLDivElement | null>(null)
   const composeRef = useRef<HTMLDivElement | null>(null)
-  const smsRef = useRef<HTMLDivElement | null>(null)
+  const sttRef = useRef<HTMLDivElement | null>(null)
   const savedRef = useRef<HTMLDivElement | null>(null)
   const wakeLockRef = useRef<any>(null)
   // 음성 인식 재시작 루프를 방지하기 위한 재시도 정보
@@ -44,6 +41,16 @@ function App() {
   const silenceWatcherRef = useRef<number | null>(null)
   const lastSpeechTsRef = useRef<number>(Date.now())
   const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
+
+  // Google STT + Speech Adaptation 및 퍼지 교정 UI 상태
+  const [sttGcsUri, setSttGcsUri] = useState('')
+  const [sttNamesText, setSttNamesText] = useState('')
+  const [sttBoost, setSttBoost] = useState(10)
+  const [sttLanguage, setSttLanguage] = useState('ko-KR')
+  const [sttSampleRate, setSttSampleRate] = useState(16000)
+  const [isSttLoading, setIsSttLoading] = useState(false)
+  const [sttOutput, setSttOutput] = useState('')
+  const [fuzzyThreshold, setFuzzyThreshold] = useState(0.8)
 
   useEffect(() => {
     // 로컬 저장된 문서 불러오기
@@ -65,10 +72,8 @@ function App() {
       try {
         const resp = await fetch(`${API_BASE}/api/health`)
         const data = await resp.json()
-        setTwilioEnabled(!!data?.twilioConfigured)
         setGeminiEnabled(!!data?.geminiConfigured)
       } catch {
-        setTwilioEnabled(null)
         setGeminiEnabled(null)
       }
     }
@@ -80,7 +85,7 @@ function App() {
     document.documentElement.dataset.theme = ''
   }, [])
 
-  const scrollTo = (ref: React.RefObject<HTMLDivElement | null>, tab: 'record' | 'compose' | 'sms' | 'saved') => {
+  const scrollTo = (ref: React.RefObject<HTMLDivElement | null>, tab: 'record' | 'compose' | 'stt' | 'saved') => {
     try {
       ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       setActiveTab(tab)
@@ -347,10 +352,69 @@ function App() {
     setTranscript('')
   }
 
-  const isValidPhone = (p: string) => {
-    const s = p.trim()
-    // 간단한 검증: E.164(+숫자, 7~15자리) 또는 국내 0으로 시작하는 번호 대략적 대응
-    return /^(\+?\d{7,15}|0\d{8,11})$/.test(s)
+  // Google STT (Speech Adaptation) 호출
+  const parseNames = (txt: string) => txt
+    .split(/[\,\n]/)
+    .map(s => s.trim())
+    .filter(Boolean)
+
+  const runSttRecognize = async () => {
+    const gcsUri = sttGcsUri.trim()
+    const phrases = parseNames(sttNamesText)
+    if (!gcsUri) {
+      alert('GCS 오디오 파일 주소를 입력해 주세요. 예: gs://bucket/file.wav')
+      return
+    }
+    try {
+      setIsSttLoading(true)
+      const resp = await fetch(`${API_BASE}/api/stt/recognize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          gcsUri,
+          languageCode: sttLanguage,
+          sampleRateHertz: sttSampleRate,
+          phrases,
+          boost: sttBoost,
+          encoding: 'LINEAR16',
+        }),
+      })
+      const data = await resp.json()
+      if (!resp.ok) throw new Error(data?.error || 'STT 변환 실패')
+      const joined = (data.transcripts || []).join('\n')
+      setSttOutput(joined)
+      if (joined) setTranscript(joined)
+    } catch (e: any) {
+      alert('STT 오류: ' + (e?.message || String(e)))
+    } finally {
+      setIsSttLoading(false)
+    }
+  }
+
+  // 퍼지 매칭으로 이름 교정
+  const runFuzzyCorrect = async () => {
+    const text = transcript.trim()
+    const nameList = parseNames(sttNamesText)
+    if (!text) {
+      alert('교정할 텍스트가 없습니다. 먼저 STT 또는 녹음을 수행하세요.')
+      return
+    }
+    if (nameList.length === 0) {
+      alert('이름 목록을 입력해 주세요.')
+      return
+    }
+    try {
+      const resp = await fetch(`${API_BASE}/api/text/correct-names`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, nameList, threshold: fuzzyThreshold }),
+      })
+      const data = await resp.json()
+      if (!resp.ok) throw new Error(data?.error || '교정 실패')
+      setTranscript(data.correctedText || text)
+    } catch (e: any) {
+      alert('교정 오류: ' + (e?.message || String(e)))
+    }
   }
 
   const composeWithGemini = async () => {
@@ -489,21 +553,11 @@ function App() {
               <AlertCircle size={14} /> Gemini 설정 필요
             </span>
           )}
-          {twilioEnabled === true && (
-            <span className="badge success" aria-label="Twilio 준비 완료">
-              <CheckCircle2 size={14} /> Twilio OK
-            </span>
-          )}
-          {twilioEnabled === false && (
-            <span className="badge danger" aria-label="Twilio 설정 필요">
-              <AlertCircle size={14} /> Twilio 설정 필요
-            </span>
-          )}
         </div>
       </header>
 
       <main className="container main">
-        <h1 className="app-title">음성→텍스트 정리 및 문자 발송</h1>
+        <h1 className="app-title">음성→텍스트 정리(STT 적응) 및 후처리</h1>
 
         <section ref={recordRef} className="section" id="record">
           <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -574,31 +628,60 @@ function App() {
           </div>
         </section>
 
-        <section ref={smsRef} className="section" id="sms">
+        <section ref={sttRef} className="section" id="stt">
           <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <MessageSquare size={18} /> 3) 문자(SMS) 발송
+            <Brain size={18} /> 3) Google STT(적응) + 퍼지 교정
           </h2>
           <div className="controls">
             <input
-              value={phoneNumber}
-              onChange={(e) => setPhoneNumber(e.target.value)}
-              placeholder="수신자 번호(+82...)"
-              type="tel"
-              inputMode="tel"
-              pattern="[0-9+\-() ]*"
+              value={sttGcsUri}
+              onChange={(e) => setSttGcsUri(e.target.value)}
+              placeholder="GCS 오디오 URI (예: gs://bucket/file.wav)"
               className="grow"
             />
-            <button className="btn btn-primary" onClick={sendSMS} disabled={twilioEnabled === false || isSending} aria-busy={isSending}>
-              {isSending ? (<><Loader2 size={16} /> 발송 중...</>) : '문자 발송(Twilio)'}
-            </button>
-            <button className="btn" onClick={openSmsApp}>휴대폰 문자앱으로 열기</button>
+            <input
+              value={sttLanguage}
+              onChange={(e) => setSttLanguage(e.target.value)}
+              placeholder="언어 코드(예: ko-KR)"
+            />
+            <input
+              value={sttSampleRate}
+              onChange={(e) => setSttSampleRate(Number(e.target.value) || 16000)}
+              placeholder="샘플레이트(Hz)"
+              type="number"
+            />
+            <input
+              value={sttBoost}
+              onChange={(e) => setSttBoost(Number(e.target.value) || 10)}
+              placeholder="부스트(1~20)"
+              type="number"
+            />
           </div>
-          <p className="help"><MessageSquare size={14} /> 국제번호 형식 예시: +821012345678</p>
-          <p className="help">
-            {twilioEnabled === null && (<><AlertCircle size={14} /> 서버 연결 상태를 확인 중입니다.</>)}
-            {twilioEnabled === false && (<><AlertCircle size={14} /> 서버에 Twilio 설정이 없습니다(.env 설정 필요).</>)}
-            {twilioEnabled === true && (<><CheckCircle2 size={14} /> Twilio 설정이 감지되었습니다. 문자 발송이 가능합니다.</>)}
-          </p>
+          <textarea
+            value={sttNamesText}
+            onChange={(e) => setSttNamesText(e.target.value)}
+            placeholder="이름/고유명사 목록(쉼표 또는 줄바꿈 구분)"
+            className="textarea-sm mt-8"
+          />
+          <div className="controls mt-8">
+            <button className="btn btn-primary" onClick={runSttRecognize} disabled={isSttLoading} aria-busy={isSttLoading}>
+              {isSttLoading ? (<><Loader2 size={16} /> 변환 중...</>) : 'STT 변환'}
+            </button>
+            <input
+              value={fuzzyThreshold}
+              onChange={(e) => setFuzzyThreshold(Number(e.target.value) || 0.8)}
+              placeholder="교정 임계값(0~1)"
+              type="number"
+              step="0.01"
+            />
+            <button className="btn" onClick={runFuzzyCorrect}>퍼지 교정(이름)</button>
+          </div>
+          {sttOutput && (
+            <div className="mt-8">
+              <p className="help">STT 결과(서버):</p>
+              <pre className="textarea-lg" style={{ whiteSpace: 'pre-wrap' }}>{sttOutput}</pre>
+            </div>
+          )}
         </section>
 
         <section ref={savedRef} className="section" id="saved">
@@ -647,12 +730,12 @@ function App() {
             <span className="tab-label">문서</span>
           </button>
           <button
-            className={`tab-btn ${activeTab === 'sms' ? 'active' : ''}`}
-            onClick={() => scrollTo(smsRef, 'sms')}
-            aria-label="문자 섹션으로 이동"
+            className={`tab-btn ${activeTab === 'stt' ? 'active' : ''}`}
+            onClick={() => scrollTo(sttRef, 'stt')}
+            aria-label="STT 섹션으로 이동"
           >
-            <MessageSquare size={18} />
-            <span className="tab-label">문자</span>
+            <Brain size={18} />
+            <span className="tab-label">STT</span>
           </button>
           <button
             className={`tab-btn ${activeTab === 'saved' ? 'active' : ''}`}

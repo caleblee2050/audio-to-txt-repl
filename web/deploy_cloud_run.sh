@@ -28,10 +28,7 @@ ENV_VARS=""
 if [ -f ".env" ]; then
   echo "[deploy] Reading .env for runtime variables"
   GOOGLE_API_KEY=$(grep -E '^GOOGLE_API_KEY=' .env | cut -d= -f2- || true)
-  TWILIO_ACCOUNT_SID=$(grep -E '^TWILIO_ACCOUNT_SID=' .env | cut -d= -f2- || true)
-  TWILIO_AUTH_TOKEN=$(grep -E '^TWILIO_AUTH_TOKEN=' .env | cut -d= -f2- || true)
-  TWILIO_PHONE_FROM=$(grep -E '^TWILIO_PHONE_FROM=' .env | cut -d= -f2- || true)
-  ENV_VARS="GOOGLE_API_KEY=$GOOGLE_API_KEY,TWILIO_ACCOUNT_SID=$TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN=$TWILIO_AUTH_TOKEN,TWILIO_PHONE_FROM=$TWILIO_PHONE_FROM"
+  ENV_VARS="GOOGLE_API_KEY=$GOOGLE_API_KEY"
 fi
 
 echo "[deploy] Deploying to Cloud Run via source (Dockerfile)"
