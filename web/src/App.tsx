@@ -483,32 +483,45 @@ function App() {
           <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Mic size={18} /> 1) 음성 인식 (정지까지 연속 기록)
           </h2>
-        <div className="controls">
-          <button
-            aria-label="녹음 토글"
-            title={isRecording ? '정지' : '녹음 시작'}
-            onClick={() => (isRecording ? stopRecording() : startRecording())}
-            className={`icon-btn ${isRecording ? 'recording' : ''}`}
-          >
-            {isRecording ? <Square size={28} /> : <Mic size={28} />}
-          </button>
-          <button className="btn" onClick={clearTranscript}>초기화</button>
-        </div>
-        {isRecording && (
-          <p className="help"><CheckCircle2 size={14} /> 녹음 중입니다. 정지 버튼을 눌러 녹음을 종료하세요.</p>
-        )}
-        {isProcessing && (
-          <p className="help"><Loader2 size={14} /> 음성을 텍스트로 변환 중입니다. 잠시만 기다려 주세요...</p>
-        )}
-          <p className="help">
-            <Mic size={14} /> 녹음 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 종료 후 자동으로 텍스트로 변환됩니다.
-          </p>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                aria-label="녹음 토글"
+                title={isRecording ? '정지' : '녹음 시작'}
+                onClick={() => (isRecording ? stopRecording() : startRecording())}
+                className={`icon-btn ${isRecording ? 'recording' : ''}`}
+                style={{ flexShrink: 0 }}
+              >
+                {isRecording ? <Square size={28} /> : <Mic size={28} />}
+              </button>
+              <button className="btn" onClick={clearTranscript} style={{ flexShrink: 0 }}>초기화</button>
+            </div>
+
+            {isRecording && (
+              <p className="help" style={{ margin: 0 }}>
+                <CheckCircle2 size={16} /> 녹음 중입니다. 정지 버튼을 눌러 녹음을 종료하세요.
+              </p>
+            )}
+            {isProcessing && (
+              <p className="help" style={{ margin: 0 }}>
+                <Loader2 size={16} /> 음성을 텍스트로 변환 중입니다. 잠시만 기다려 주세요...
+              </p>
+            )}
+            {!isRecording && !isProcessing && (
+              <p className="help" style={{ margin: 0 }}>
+                <Mic size={16} /> 녹음 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 종료 후 자동으로 텍스트로 변환됩니다.
+              </p>
+            )}
+          </div>
+
           <textarea
             value={transcript}
             onChange={(e) => setTranscript(e.target.value)}
             placeholder="녹음 후 정지하면 여기에 음성 인식 결과가 표시됩니다."
-            className="textarea-md mt-8"
+            className="textarea-md"
             disabled={isProcessing}
+            style={{ marginTop: 16 }}
           />
         </section>
 
