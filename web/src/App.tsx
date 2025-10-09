@@ -317,8 +317,6 @@ function App() {
       mediaRecorderRef.current = recorder
       audioChunksRef.current = []
 
-      let currentText = transcript
-
       recorder.ondataavailable = async (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data)
@@ -331,15 +329,26 @@ function App() {
             const reader = new FileReader()
             reader.onloadend = async () => {
               const base64 = (reader.result as string).split(',')[1]
+              console.log('STT 청크 전송 중...', base64.length, 'bytes')
+
               const resp = await fetch(`${API_BASE}/api/stt/recognize-chunk`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ audioData: base64, mimeType }),
               })
               const data = await resp.json()
+
+              console.log('STT 응답:', data)
+
               if (data.text) {
-                currentText += (currentText ? '\n' : '') + data.text
-                setTranscript(currentText)
+                // 함수형 업데이트로 최신 상태 참조
+                setTranscript(prev => {
+                  const updated = prev ? prev + '\n' + data.text : data.text
+                  console.log('텍스트 업데이트:', updated)
+                  return updated
+                })
+              } else {
+                console.warn('STT 결과 없음 (무음 또는 인식 실패)')
               }
             }
             reader.readAsDataURL(audioBlob)
@@ -361,6 +370,7 @@ function App() {
       setIsRecording(true)
       isRecordingRef.current = true
       acquireWakeLock()
+      console.log('MediaRecorder 녹음 시작:', mimeType)
     } catch (err) {
       console.error('MediaRecorder 시작 실패:', err)
       alert('마이크 권한을 허용해 주세요.')

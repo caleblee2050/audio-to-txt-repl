@@ -31,35 +31,43 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
 
     // Base64 디코딩
     const audioBytes = Buffer.from(audioData, 'base64');
+    console.log(`[STT] 청크 수신: ${audioBytes.length} bytes, ${mimeType}`);
 
     // 포맷 감지
     let encoding = 'WEBM_OPUS';
+    let sampleRate = 48000;
+
     if (mimeType?.includes('mp4')) {
       // iOS는 MP4를 보내므로 LINEAR16로 처리 시도
       encoding = 'LINEAR16';
+      sampleRate = 16000;
     }
 
     const request = {
       audio: { content: audioBytes },
       config: {
         encoding,
-        sampleRateHertz: 48000, // WebM Opus 기본값
+        sampleRateHertz: sampleRate,
         languageCode: 'ko-KR',
-        model: 'default',
+        model: 'latest_long',
         audioChannelCount: 1,
         enableAutomaticPunctuation: true,
+        useEnhanced: true,
       },
     };
 
+    console.log(`[STT] Google STT 요청: encoding=${encoding}, sampleRate=${sampleRate}`);
     const [response] = await speechClient.recognize(request);
+
     const transcription = response.results
       ?.map(result => result.alternatives?.[0]?.transcript || '')
       .join('\n')
       .trim();
 
+    console.log(`[STT] 결과: "${transcription}" (${transcription.length} chars)`);
     res.json({ text: transcription || '' });
   } catch (err) {
-    console.error('STT error:', err);
+    console.error('[STT] 오류:', err);
     res.status(500).json({ error: 'STT failed', details: String(err?.message || err) });
   }
 });
