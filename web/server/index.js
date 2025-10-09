@@ -3,8 +3,9 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 // Twilio 제거: 문자 발송 기능 삭제
 // Google Cloud Speech-to-Text 클라이언트 추가
-import { SpeechClient } from '@google-cloud/speech';
-import stringSimilarity from 'string-similarity';
+// STT/퍼지 교정 기능 제거
+// import { SpeechClient } from '@google-cloud/speech';
+// import stringSimilarity from 'string-similarity';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -18,7 +19,7 @@ app.use(cors());
 app.use(express.json());
 
 const { GOOGLE_API_KEY } = process.env;
-const speechClient = new SpeechClient();
+// const speechClient = new SpeechClient();
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, geminiConfigured: !!GOOGLE_API_KEY });
@@ -28,101 +29,12 @@ app.get('/api/health', (_req, res) => {
 
 // Google STT: Speech Adaptation을 활용한 동기 인식 엔드포인트
 // 요청 형식: { gcsUri?: string, audioBase64?: string, languageCode?: string, sampleRateHertz?: number, phrases?: string[], boost?: number, encoding?: 'LINEAR16'|'WEBM_OPUS'|'FLAC' }
-app.post('/api/stt/recognize', async (req, res) => {
-  try {
-    const {
-      gcsUri,
-      audioBase64,
-      languageCode = 'ko-KR',
-      sampleRateHertz = 16000,
-      phrases = [],
-      boost = 10,
-      encoding = 'LINEAR16',
-    } = req.body || {};
-
-    if (!gcsUri && !audioBase64) {
-      return res.status(400).json({ error: 'Provide either "gcsUri" or "audioBase64"' });
-    }
-
-    const audio = gcsUri ? { uri: gcsUri } : { content: audioBase64 };
-
-    // Speech Adaptation 구성: phraseSets에 boost를 부여
-    const adaptation = phrases.length > 0 ? {
-      phraseSets: [
-        {
-          phrases: phrases.map(p => ({ value: p, boost })),
-        },
-      ],
-    } : undefined;
-
-    const config = {
-      encoding,
-      sampleRateHertz,
-      languageCode,
-      adaptation,
-      // 한국어 인식 품질 향상을 위한 기본 옵션
-      enableAutomaticPunctuation: true,
-      model: 'latest_long',
-    };
-
-    const [response] = await speechClient.recognize({ config, audio });
-    // response.results[].alternatives[0].transcript 를 합쳐 반환
-    const transcripts = (response.results || []).map(r => r.alternatives?.[0]?.transcript || '').filter(Boolean);
-    return res.json({ transcripts, raw: response });
-  } catch (err) {
-    console.error('STT recognize error:', err);
-    return res.status(500).json({ error: 'Failed to recognize speech', details: String(err?.message || err) });
-  }
-});
+// STT 엔드포인트 제거됨
 
 // Fuzzy Matching: 이름 교정 엔드포인트
 // 요청 형식: { text: string, nameList: string[], threshold?: number }
 // 응답: { correctedText: string, matches: Array<{ original: string, replacement: string, rating: number }> }
-app.post('/api/text/correct-names', async (req, res) => {
-  try {
-    const { text = '', nameList = [], threshold = 0.8 } = req.body || {};
-    if (!text || !Array.isArray(nameList) || nameList.length === 0) {
-      return res.status(400).json({ error: 'Missing "text" or empty "nameList"' });
-    }
-
-    const stripParticles = (word) => {
-      // 간단한 조사 제거: 단어 끝의 한 글자 조사들을 최대 두 번까지 제거
-      const particles = ['님', '께서', '과', '와', '은', '는', '이', '가', '을', '를'];
-      let w = word;
-      for (let i = 0; i < 2; i++) {
-        let removed = false;
-        for (const p of particles) {
-          if (w.endsWith(p)) {
-            w = w.slice(0, -p.length);
-            removed = true;
-            break;
-          }
-        }
-        if (!removed) break;
-      }
-      return w;
-    };
-
-    const tokens = text.split(/\s+/);
-    const matches = [];
-    const corrected = tokens.map((word) => {
-      const clean = stripParticles(word.replace(/[.,;:!?””"'()\[\]{}]/g, ''));
-      if (!clean) return word;
-      const resMatch = stringSimilarity.findBestMatch(clean, nameList);
-      const best = resMatch.bestMatch;
-      if (best.rating >= threshold) {
-        matches.push({ original: clean, replacement: best.target, rating: best.rating });
-        return word.replace(clean, best.target);
-      }
-      return word;
-    });
-
-    return res.json({ correctedText: corrected.join(' '), matches });
-  } catch (err) {
-    console.error('Fuzzy correction error:', err);
-    return res.status(500).json({ error: 'Failed to correct names', details: String(err?.message || err) });
-  }
-});
+// 퍼지 교정 엔드포인트 제거됨
 
 // Gemini compose endpoint
 app.post('/api/compose', async (req, res) => {

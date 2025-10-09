@@ -2,14 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { Mic, Square, Brain, Folder, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
 import './App.css'
 
-type FormatId = 'official' | 'minutes' | 'summary' | 'blog' | 'smsNotice'
+type FormatId = 'official' | 'minutes' | 'summary' | 'blog'
 
 const formatOptions: { id: FormatId; label: string }[] = [
   { id: 'official', label: '공문 작성' },
   { id: 'minutes', label: '회의록' },
   { id: 'summary', label: '요약문' },
   { id: 'blog', label: '블로그 글' },
-  { id: 'smsNotice', label: '문자 안내문' },
 ]
 
 type SavedDoc = { id: string; title: string; content: string; createdAt: number; formatId: FormatId }
@@ -23,12 +22,11 @@ function App() {
   const [savedDocs, setSavedDocs] = useState<SavedDoc[]>([])
   const [geminiEnabled, setGeminiEnabled] = useState<boolean | null>(null)
   const [instruction, setInstruction] = useState('')
-  const [activeTab, setActiveTab] = useState<'record' | 'compose' | 'stt' | 'saved'>('record')
+  const [activeTab, setActiveTab] = useState<'record' | 'compose' | 'saved'>('record')
   const [isComposing, setIsComposing] = useState(false)
   const recognitionRef = useRef<any>(null)
   const recordRef = useRef<HTMLDivElement | null>(null)
   const composeRef = useRef<HTMLDivElement | null>(null)
-  const sttRef = useRef<HTMLDivElement | null>(null)
   const savedRef = useRef<HTMLDivElement | null>(null)
   const wakeLockRef = useRef<any>(null)
   // 음성 인식 재시작 루프를 방지하기 위한 재시도 정보
@@ -36,21 +34,23 @@ function App() {
   // 중복 재시작 예약을 방지하기 위한 타이머 핸들
   const restartTimeoutRef = useRef<number | null>(null)
   // 말이 멈춘 이후 자동 종료 임계시간(무음 지속 시간)
-  const SILENCE_RESTART_DELAY_MS = 600000 // 10분
+  const SILENCE_RESTART_DELAY_MS = 180000 // 3분 (긴 무음 후 자동 종료)
   const silenceTimeoutRef = useRef<number | null>(null)
   const silenceWatcherRef = useRef<number | null>(null)
   const lastSpeechTsRef = useRef<number>(Date.now())
+  // 마이크 스트림을 유지하고 에너지를 감지하여 무음 판단을 보완
+  const mediaStreamRef = useRef<MediaStream | null>(null)
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const gainNodeRef = useRef<GainNode | null>(null)
+  const energyWatcherRef = useRef<number | null>(null)
+  const recWatchRef = useRef<number | null>(null)
+  const ENERGY_CHECK_INTERVAL_MS = 400
+  const ENERGY_RMS_THRESHOLD = 0.008 // 말소리 존재 추정 임계값(모바일 마이크 감도 고려하여 낮춤)
   const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
 
-  // Google STT + Speech Adaptation 및 퍼지 교정 UI 상태
-  const [sttGcsUri, setSttGcsUri] = useState('')
-  const [sttNamesText, setSttNamesText] = useState('')
-  const [sttBoost, setSttBoost] = useState(10)
-  const [sttLanguage, setSttLanguage] = useState('ko-KR')
-  const [sttSampleRate, setSttSampleRate] = useState(16000)
-  const [isSttLoading, setIsSttLoading] = useState(false)
-  const [sttOutput, setSttOutput] = useState('')
-  const [fuzzyThreshold, setFuzzyThreshold] = useState(0.8)
+  // STT/퍼지 교정 기능 제거됨: UI/상태 삭제
 
   useEffect(() => {
     // 로컬 저장된 문서 불러오기
@@ -85,11 +85,114 @@ function App() {
     document.documentElement.dataset.theme = ''
   }, [])
 
-  const scrollTo = (ref: React.RefObject<HTMLDivElement | null>, tab: 'record' | 'compose' | 'stt' | 'saved') => {
+  const scrollTo = (ref: React.RefObject<HTMLDivElement | null>, tab: 'record' | 'compose' | 'saved') => {
     try {
       ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       setActiveTab(tab)
     } catch {}
+  }
+
+  // AudioContext/MediaStream 시작: 마이크 경로를 유지하고 에너지(RMS)로 발화 감지
+  const startMicStream = async () => {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) return
+      if (mediaStreamRef.current) {
+        try { await audioCtxRef.current?.resume?.() } catch {}
+        return
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { noiseSuppression: false, echoCancellation: false, autoGainControl: false },
+      })
+      mediaStreamRef.current = stream
+      const AC: any = (window as any).AudioContext || (window as any).webkitAudioContext
+      if (!AC) return
+      const ctx: AudioContext = new AC()
+      audioCtxRef.current = ctx
+      const src = ctx.createMediaStreamSource(stream)
+      sourceNodeRef.current = src
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 2048
+      analyserRef.current = analyser
+      src.connect(analyser)
+      // 무출력(무음) 라우팅으로 오디오 경로 유지 (일부 iOS 장치에서 필요)
+      const gain = ctx.createGain()
+      gain.gain.value = 0
+      gainNodeRef.current = gain
+      src.connect(gain)
+      gain.connect(ctx.destination)
+
+      if (energyWatcherRef.current) {
+        clearInterval(energyWatcherRef.current)
+        energyWatcherRef.current = null
+      }
+      energyWatcherRef.current = window.setInterval(() => {
+        try {
+          const a = analyserRef.current
+          if (!a) return
+          const buf = new Float32Array(a.fftSize)
+          a.getFloatTimeDomainData(buf)
+          let sum = 0
+          for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i]
+          const rms = Math.sqrt(sum / buf.length)
+          if (rms > ENERGY_RMS_THRESHOLD) {
+            lastSpeechTsRef.current = Date.now()
+          }
+        } catch {}
+      }, ENERGY_CHECK_INTERVAL_MS)
+    } catch (e) {
+      console.warn('startMicStream failed:', e)
+    }
+  }
+
+  const stopMicStream = () => {
+    try {
+      if (energyWatcherRef.current) {
+        clearInterval(energyWatcherRef.current)
+        energyWatcherRef.current = null
+      }
+      try { gainNodeRef.current?.disconnect?.() } catch {}
+      try { sourceNodeRef.current?.disconnect?.() } catch {}
+      try { audioCtxRef.current?.close?.() } catch {}
+      audioCtxRef.current = null
+      analyserRef.current = null
+      gainNodeRef.current = null
+      sourceNodeRef.current = null
+      if (mediaStreamRef.current) {
+        try { mediaStreamRef.current.getTracks().forEach(t => t.stop()) } catch {}
+        mediaStreamRef.current = null
+      }
+    } catch (e) {
+      console.warn('stopMicStream failed:', e)
+    }
+  }
+
+  const startRecWatchdog = () => {
+    if (recWatchRef.current) {
+      clearInterval(recWatchRef.current)
+      recWatchRef.current = null
+    }
+    recWatchRef.current = window.setInterval(() => {
+      try {
+        if (!isRecordingRef.current) return
+        const rec = recognitionRef.current
+        // 인식 객체가 사라졌고, 무음 타임아웃에 도달하지 않았다면 복구 시도
+        const silenceFor = Date.now() - lastSpeechTsRef.current
+        if (!rec && silenceFor < SILENCE_RESTART_DELAY_MS) {
+          console.warn('Recognition missing; respawning...')
+          // 간단 복구: 플래그를 내렸다가 재시작 호출
+          isRecordingRef.current = false
+          setIsRecording(false)
+          startRecording()
+        }
+      } catch {}
+    }, 7000)
+  }
+
+  const stopRecWatchdog = () => {
+    if (recWatchRef.current) {
+      clearInterval(recWatchRef.current)
+      recWatchRef.current = null
+    }
   }
 
   // 컴포넌트 언마운트 시 녹음 강제 종료(잔여 이벤트로 재시작되는 문제 예방)
@@ -100,6 +203,8 @@ function App() {
         if (rec) rec.stop()
         recognitionRef.current = null
         try { awaitWakeRelease() } catch {}
+        try { stopMicStream() } catch {}
+        try { stopRecWatchdog() } catch {}
       } catch {}
     }
   }, [])
@@ -168,6 +273,7 @@ function App() {
     const onVis = () => {
       if (document.visibilityState === 'visible' && isRecordingRef.current) {
         acquireWakeLock()
+        try { audioCtxRef.current?.resume?.() } catch {}
       }
     }
     document.addEventListener('visibilitychange', onVis)
@@ -190,6 +296,59 @@ function App() {
     try { (recognition as any).maxAlternatives = 1 } catch {}
     isRecordingRef.current = true
 
+    // 마이크 스트림 및 에너지 감시 시작(인식 엔진과 별개로 오디오 경로 유지)
+    try { await startMicStream() } catch {}
+
+    const attachHandlers = (rec: any) => {
+      let finalText = transcript
+      rec.onresult = (event: any) => {
+        // 모든 onresult 호출 시 타임스탬프 갱신하여 연속성 유지
+        lastSpeechTsRef.current = Date.now()
+        let interim = ''
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i]
+          const text = result[0].transcript
+          if (result.isFinal) {
+            finalText += (finalText ? '\n' : '') + text.trim()
+            setTranscript(finalText)
+          } else {
+            interim += text
+          }
+        }
+      }
+      rec.onerror = (e: any) => {
+        console.error('Recognition error:', e)
+        const restartable = ['no-speech', 'network', 'aborted', 'audio-capture']
+        if (isRecordingRef.current && restartable.includes(e?.error)) {
+          attemptRestart('error')
+        }
+        if (e?.error === 'not-allowed') {
+          alert('마이크 권한이 허용되지 않았습니다. 브라우저/OS 권한을 확인해 주세요.')
+          stopRecording()
+        }
+      }
+      ;(rec as any).onspeechstart = () => { lastSpeechTsRef.current = Date.now(); clearSilenceTimeout() }
+      // onspeechend 재시작 로직 제거: 모바일에서 짧은 무음에도 빈번히 발생하여 끊김 현상 유발
+      ;(rec as any).onspeechend = () => { /* 재시작 로직 제거 - 에너지 감지와 silenceWatcher만 활용 */ }
+      rec.onend = () => {
+        if (!isRecordingRef.current) {
+          setIsRecording(false)
+          recognitionRef.current = null
+          return
+        }
+        setIsRecording(true)
+        attemptRestart('silence')
+      }
+      ;(rec as any).onstart = () => {
+        try { acquireWakeLock() } catch {}
+        resetRestartInfo()
+        try {
+          ;(rec as any).continuous = true
+          ;(rec as any).interimResults = true
+        } catch {}
+      }
+    }
+
     const attemptRestart = (cause: 'error' | 'silence' = 'error') => {
       if (!isRecordingRef.current) return
       const now = Date.now()
@@ -209,21 +368,48 @@ function App() {
         return
       }
 
+      const rec = recognitionRef.current
       if (cause === 'silence') {
         if (restartTimeoutRef.current) return
-        restartTimeoutRef.current = window.setTimeout(() => {
-          restartTimeoutRef.current = null
-          if (!isRecordingRef.current) return
-          try {
-            recognition.start()
-          } catch (e) {
-            console.warn('Silence restart failed:', e)
-            // 1회 재시도
-            setTimeout(() => {
-              if (isRecordingRef.current) try { recognition.start() } catch {}
-            }, 500)
-          }
-        }, 500)
+        // 짧은 무음으로 인한 엔진 종료 시 신속 재시작(최대 2회 재시도)
+        const tryStart = (delay: number) => {
+          restartTimeoutRef.current = window.setTimeout(() => {
+            restartTimeoutRef.current = null
+            if (!isRecordingRef.current) return
+            try {
+              try { rec?.stop?.() } catch {}
+              rec?.start()
+            } catch (e) {
+              console.warn('Silence restart failed:', e)
+              // 두 번째 재시도(지연 증가)
+              if (delay < 1000) {
+                restartTimeoutRef.current = window.setTimeout(() => {
+                  restartTimeoutRef.current = null
+                  if (isRecordingRef.current) {
+                    try {
+                      try { rec?.stop?.() } catch {}
+                      rec?.start()
+                    } catch {
+                      // 객체가 망가진 경우 새로 생성하여 재시도
+                      const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+                      if (SR) {
+                        const newRec = new SR()
+                        newRec.continuous = true
+                        newRec.interimResults = true
+                        newRec.lang = 'ko-KR'
+                        try { (newRec as any).maxAlternatives = 1 } catch {}
+                        recognitionRef.current = newRec
+                        attachHandlers(newRec)
+                        try { newRec.start() } catch {}
+                      }
+                    }
+                  }
+                }, 1000)
+              }
+            }
+          }, delay)
+        }
+        tryStart(200)  // 500ms → 200ms로 단축하여 모바일에서 끊김 체감 감소
         return
       }
 
@@ -234,78 +420,37 @@ function App() {
         restartTimeoutRef.current = null
         if (!isRecordingRef.current) return
         try {
-          recognition.start()
+          try { rec?.stop?.() } catch {}
+          rec?.start()
         } catch {
           // 재시작 실패 시 소폭 지연 후 1회 추가 시도
           const retryDelay = 400
           restartTimeoutRef.current = window.setTimeout(() => {
             restartTimeoutRef.current = null
             if (isRecordingRef.current) {
-              try { recognition.start() } catch {}
+              try {
+                try { rec?.stop?.() } catch {}
+                rec?.start()
+              } catch {
+                const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+                if (SR) {
+                  const newRec = new SR()
+                  newRec.continuous = true
+                  newRec.interimResults = true
+                  newRec.lang = 'ko-KR'
+                  try { (newRec as any).maxAlternatives = 1 } catch {}
+                  recognitionRef.current = newRec
+                  attachHandlers(newRec)
+                  try { newRec.start() } catch {}
+                }
+              }
             }
           }, retryDelay)
         }
       }, delay)
     }
 
-    let finalText = transcript
-    recognition.onresult = (event: any) => {
-      let interim = ''
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i]
-        const text = result[0].transcript
-        if (result.isFinal) {
-          finalText += (finalText ? '\n' : '') + text.trim()
-          setTranscript(finalText)
-          // 발화가 감지되었으므로 무음 기준 시점을 현재로 갱신
-          lastSpeechTsRef.current = Date.now()
-        } else {
-          interim += text
-          // 임시 인식 결과도 발화로 간주하여 시점 갱신
-          if (interim) lastSpeechTsRef.current = Date.now()
-        }
-      }
-      // 필요 시, 임시 텍스트를 화면에 표시하려면 상태로 관리 가능
-    }
-
-    recognition.onerror = (e: any) => {
-      console.error('Recognition error:', e)
-      const restartable = ['no-speech', 'network', 'aborted', 'audio-capture']
-      if (isRecordingRef.current && restartable.includes(e?.error)) {
-        attemptRestart('error')
-      }
-      if (e?.error === 'not-allowed') {
-        alert('마이크 권한이 허용되지 않았습니다. 브라우저/OS 권한을 확인해 주세요.')
-        stopRecording()
-      }
-    }
-
-    // 일부 브라우저는 음성/사운드/오디오 스트림 종료 이벤트를 별도로 발생시킵니다.
-    // 짧은 끊김 시 자동 재시작을 시도해 간극을 최소화합니다.
-    ;(recognition as any).onspeechstart = () => { lastSpeechTsRef.current = Date.now(); clearSilenceTimeout() }
-    ;(recognition as any).onspeechend = () => { if (isRecordingRef.current) attemptRestart('silence') }
-
-    recognition.onend = () => {
-      if (!isRecordingRef.current) {
-        setIsRecording(false)
-        recognitionRef.current = null
-        return
-      }
-      // 인식 엔진이 끝나도 대기 상태를 유지하도록 재시작을 시도
-      setIsRecording(true)
-      attemptRestart('silence')
-    }
-
-    // 시작 시 Wake Lock 재획득 시도(지원 기기에서 화면 꺼짐 방지)
-    ;(recognition as any).onstart = () => {
-      try { acquireWakeLock() } catch {}
-      resetRestartInfo()
-      // 모바일에서 연속 모드가 더 오래 유지되도록 설정
-      try {
-        ;(recognition as any).continuous = true
-        ;(recognition as any).interimResults = true
-      } catch {}
-    }
+    attachHandlers(recognition)
 
     recognitionRef.current = recognition
     recognition.start()
@@ -313,6 +458,7 @@ function App() {
     lastSpeechTsRef.current = Date.now()
     startSilenceWatcher()
     acquireWakeLock()
+    startRecWatchdog()
   }
 
   const stopRecording = () => {
@@ -333,6 +479,9 @@ function App() {
       recognitionRef.current = null
     }
     awaitWakeRelease()
+    // 오디오 리소스 정리
+    stopMicStream()
+    stopRecWatchdog()
     // 예약된 재시작 작업이 있으면 취소
     if (restartTimeoutRef.current) {
       clearTimeout(restartTimeoutRef.current)
@@ -350,71 +499,6 @@ function App() {
 
   const clearTranscript = () => {
     setTranscript('')
-  }
-
-  // Google STT (Speech Adaptation) 호출
-  const parseNames = (txt: string) => txt
-    .split(/[\,\n]/)
-    .map(s => s.trim())
-    .filter(Boolean)
-
-  const runSttRecognize = async () => {
-    const gcsUri = sttGcsUri.trim()
-    const phrases = parseNames(sttNamesText)
-    if (!gcsUri) {
-      alert('GCS 오디오 파일 주소를 입력해 주세요. 예: gs://bucket/file.wav')
-      return
-    }
-    try {
-      setIsSttLoading(true)
-      const resp = await fetch(`${API_BASE}/api/stt/recognize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          gcsUri,
-          languageCode: sttLanguage,
-          sampleRateHertz: sttSampleRate,
-          phrases,
-          boost: sttBoost,
-          encoding: 'LINEAR16',
-        }),
-      })
-      const data = await resp.json()
-      if (!resp.ok) throw new Error(data?.error || 'STT 변환 실패')
-      const joined = (data.transcripts || []).join('\n')
-      setSttOutput(joined)
-      if (joined) setTranscript(joined)
-    } catch (e: any) {
-      alert('STT 오류: ' + (e?.message || String(e)))
-    } finally {
-      setIsSttLoading(false)
-    }
-  }
-
-  // 퍼지 매칭으로 이름 교정
-  const runFuzzyCorrect = async () => {
-    const text = transcript.trim()
-    const nameList = parseNames(sttNamesText)
-    if (!text) {
-      alert('교정할 텍스트가 없습니다. 먼저 STT 또는 녹음을 수행하세요.')
-      return
-    }
-    if (nameList.length === 0) {
-      alert('이름 목록을 입력해 주세요.')
-      return
-    }
-    try {
-      const resp = await fetch(`${API_BASE}/api/text/correct-names`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, nameList, threshold: fuzzyThreshold }),
-      })
-      const data = await resp.json()
-      if (!resp.ok) throw new Error(data?.error || '교정 실패')
-      setTranscript(data.correctedText || text)
-    } catch (e: any) {
-      alert('교정 오류: ' + (e?.message || String(e)))
-    }
   }
 
   const composeWithGemini = async () => {
@@ -509,7 +593,7 @@ function App() {
       </header>
 
       <main className="container main">
-        <h1 className="app-title">음성→텍스트 정리(STT 적응) 및 후처리</h1>
+        <h1 className="app-title">음성→텍스트 정리 및 문서화</h1>
 
         <section ref={recordRef} className="section" id="record">
           <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -580,61 +664,7 @@ function App() {
           </div>
         </section>
 
-        <section ref={sttRef} className="section" id="stt">
-          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Brain size={18} /> 3) Google STT(적응) + 퍼지 교정
-          </h2>
-          <div className="controls">
-            <input
-              value={sttGcsUri}
-              onChange={(e) => setSttGcsUri(e.target.value)}
-              placeholder="GCS 오디오 URI (예: gs://bucket/file.wav)"
-              className="grow"
-            />
-            <input
-              value={sttLanguage}
-              onChange={(e) => setSttLanguage(e.target.value)}
-              placeholder="언어 코드(예: ko-KR)"
-            />
-            <input
-              value={sttSampleRate}
-              onChange={(e) => setSttSampleRate(Number(e.target.value) || 16000)}
-              placeholder="샘플레이트(Hz)"
-              type="number"
-            />
-            <input
-              value={sttBoost}
-              onChange={(e) => setSttBoost(Number(e.target.value) || 10)}
-              placeholder="부스트(1~20)"
-              type="number"
-            />
-          </div>
-          <textarea
-            value={sttNamesText}
-            onChange={(e) => setSttNamesText(e.target.value)}
-            placeholder="이름/고유명사 목록(쉼표 또는 줄바꿈 구분)"
-            className="textarea-sm mt-8"
-          />
-          <div className="controls mt-8">
-            <button className="btn btn-primary" onClick={runSttRecognize} disabled={isSttLoading} aria-busy={isSttLoading}>
-              {isSttLoading ? (<><Loader2 size={16} /> 변환 중...</>) : 'STT 변환'}
-            </button>
-            <input
-              value={fuzzyThreshold}
-              onChange={(e) => setFuzzyThreshold(Number(e.target.value) || 0.8)}
-              placeholder="교정 임계값(0~1)"
-              type="number"
-              step="0.01"
-            />
-            <button className="btn" onClick={runFuzzyCorrect}>퍼지 교정(이름)</button>
-          </div>
-          {sttOutput && (
-            <div className="mt-8">
-              <p className="help">STT 결과(서버):</p>
-              <pre className="textarea-lg" style={{ whiteSpace: 'pre-wrap' }}>{sttOutput}</pre>
-            </div>
-          )}
-        </section>
+        {/* STT/퍼지 교정 섹션 제거됨 */}
 
         <section ref={savedRef} className="section" id="saved">
           <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -681,14 +711,7 @@ function App() {
             <Brain size={18} />
             <span className="tab-label">문서</span>
           </button>
-          <button
-            className={`tab-btn ${activeTab === 'stt' ? 'active' : ''}`}
-            onClick={() => scrollTo(sttRef, 'stt')}
-            aria-label="STT 섹션으로 이동"
-          >
-            <Brain size={18} />
-            <span className="tab-label">STT</span>
-          </button>
+          {/* STT 탭 제거됨 */}
           <button
             className={`tab-btn ${activeTab === 'saved' ? 'active' : ''}`}
             onClick={() => scrollTo(savedRef, 'saved')}
