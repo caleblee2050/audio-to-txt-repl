@@ -15,9 +15,10 @@ type SavedDoc = { id: string; title: string; content: string; createdAt: number;
 
 function App() {
   const [isRecording, setIsRecording] = useState(false)
-  const [transcript, setTranscript] = useState('')
+  const [transcript, setTranscript] = useState('') // 1단계: 원본 녹음 내용
   const [formatId, setFormatId] = useState<FormatId>('summary')
-  const [composedText, setComposedText] = useState('')
+  const [editedTranscript, setEditedTranscript] = useState('') // 2단계: AI 수정된 내용 (미리보기)
+  const [composedText, setComposedText] = useState('') // 3단계: 최종 문서
   const [savedDocs, setSavedDocs] = useState<SavedDoc[]>([])
   const [geminiEnabled, setGeminiEnabled] = useState<boolean | null>(null)
   const [instruction, setInstruction] = useState('')
@@ -28,6 +29,7 @@ function App() {
   // 음성 지시 녹음 상태
   const [isRecordingInstruction, setIsRecordingInstruction] = useState(false)
   const [isProcessingInstruction, setIsProcessingInstruction] = useState(false)
+  const [isEditingTranscript, setIsEditingTranscript] = useState(false) // 원본 수정 중
 
   const recordRef = useRef<HTMLDivElement | null>(null)
   const composeRef = useRef<HTMLDivElement | null>(null)
@@ -341,7 +343,8 @@ function App() {
     }
   }
 
-  const composeWithGemini = async () => {
+  // 원본 내용 수정 (음성/텍스트 지시 반영)
+  const editTranscriptWithAI = async () => {
     if (geminiEnabled === false) {
       alert('서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정 필요).')
       return
@@ -350,12 +353,53 @@ function App() {
       alert('먼저 음성을 녹음하여 텍스트를 생성해 주세요.')
       return
     }
+    if (!instruction.trim()) {
+      alert('수정 지시사항을 입력해 주세요.')
+      return
+    }
+
+    try {
+      setIsEditingTranscript(true)
+      const resp = await fetch(`${API_BASE}/api/compose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transcript,
+          formatId: 'summary', // 수정은 요약 모드 사용
+          instruction: instruction.trim()
+        }),
+      })
+      const data = await resp.json()
+      if (!resp.ok) throw new Error(data?.error || 'Edit failed')
+      setEditedTranscript(data.text || '')
+    } catch (err: any) {
+      alert('수정 중 오류: ' + (err?.message || String(err)))
+    } finally {
+      setIsEditingTranscript(false)
+    }
+  }
+
+  // 수정된 내용 승인 → 최종 문서 작성
+  const composeWithGemini = async () => {
+    if (geminiEnabled === false) {
+      alert('서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정 필요).')
+      return
+    }
+    const sourceText = editedTranscript || transcript
+    if (!sourceText.trim()) {
+      alert('먼저 음성을 녹음하여 텍스트를 생성해 주세요.')
+      return
+    }
     try {
       setIsComposing(true)
       const resp = await fetch(`${API_BASE}/api/compose`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transcript, formatId, instruction: instruction.trim() }),
+        body: JSON.stringify({
+          transcript: sourceText,
+          formatId,
+          instruction: '' // 최종 문서는 형식만 적용
+        }),
       })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data?.error || 'Compose failed')
@@ -365,6 +409,23 @@ function App() {
     } finally {
       setIsComposing(false)
     }
+  }
+
+  // 수정된 내용 승인
+  const approveEdit = () => {
+    if (!editedTranscript.trim()) {
+      alert('수정된 내용이 없습니다.')
+      return
+    }
+    // 수정 승인 → instruction 초기화
+    setInstruction('')
+    alert('수정이 승인되었습니다. 이제 최종 문서 형식을 선택하여 작성하세요.')
+  }
+
+  // 수정 취소
+  const cancelEdit = () => {
+    setEditedTranscript('')
+    setInstruction('')
   }
 
   const saveDocument = () => {
@@ -470,73 +531,142 @@ function App() {
 
         <section ref={composeRef} className="section" id="compose">
           <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Brain size={18} /> 2) 문서 형식 선택 및 작성
+            <Brain size={18} /> 2) 원본 내용 확인 및 수정
           </h2>
-          <div className="controls">
+
+          {/* 원본 녹음 내용 표시 */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 8, fontWeight: 600 }}>원본 녹음 내용</label>
+            <textarea
+              value={transcript}
+              onChange={(e) => setTranscript(e.target.value)}
+              placeholder="1단계에서 녹음한 내용이 여기에 표시됩니다."
+              className="textarea-md"
+              readOnly
+              style={{ backgroundColor: '#f5f5f5', cursor: 'not-allowed' }}
+            />
+          </div>
+
+          {/* 수정 지시 입력 */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 8, fontWeight: 600 }}>수정 지시사항 (음성 또는 텍스트)</label>
+            <div style={{ position: 'relative' }}>
+              <textarea
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                placeholder="오타 수정, 내용 추가/삭제 등을 지시하세요. 예: '잘못된 부분 수정해줘', '300자로 요약해줘'"
+                className="textarea-sm"
+                disabled={isProcessingInstruction}
+                style={{ paddingRight: 60 }}
+              />
+              <button
+                aria-label="음성으로 지시"
+                title={isRecordingInstruction ? '음성 지시 정지' : '음성으로 지시'}
+                onClick={() => (isRecordingInstruction ? stopRecordingInstruction() : startRecordingInstruction())}
+                className={`icon-btn ${isRecordingInstruction ? 'recording' : ''}`}
+                disabled={isProcessingInstruction}
+                style={{
+                  position: 'absolute',
+                  right: 8,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  width: 40,
+                  height: 40,
+                  minWidth: 40,
+                }}
+              >
+                {isRecordingInstruction ? <Square size={20} /> : <Mic size={20} />}
+              </button>
+            </div>
+            {isRecordingInstruction && (
+              <p className="help" style={{ marginTop: 4 }}>
+                <CheckCircle2 size={14} /> 음성 지시를 녹음 중입니다. 정지 버튼을 눌러 녹음을 종료하세요.
+              </p>
+            )}
+            {isProcessingInstruction && (
+              <p className="help" style={{ marginTop: 4 }}>
+                <Loader2 size={14} /> 음성을 텍스트로 변환 중입니다...
+              </p>
+            )}
+          </div>
+
+          {/* AI 수정 버튼 */}
+          <div className="controls" style={{ marginBottom: 16 }}>
+            <button
+              className="btn btn-primary"
+              onClick={editTranscriptWithAI}
+              disabled={geminiEnabled === false || isEditingTranscript || !transcript.trim() || !instruction.trim()}
+              aria-busy={isEditingTranscript}
+            >
+              {isEditingTranscript ? (<><Loader2 size={16} /> 수정 중...</>) : 'AI로 내용 수정'}
+            </button>
+            {editedTranscript && (
+              <>
+                <button className="btn" onClick={approveEdit}>수정 승인</button>
+                <button className="btn btn-outline" onClick={cancelEdit}>수정 취소</button>
+              </>
+            )}
+          </div>
+
+          {/* 수정된 내용 미리보기 */}
+          {editedTranscript && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: 'block', marginBottom: 8, fontWeight: 600, color: '#0066cc' }}>
+                ✓ 수정된 내용 (미리보기)
+              </label>
+              <textarea
+                value={editedTranscript}
+                onChange={(e) => setEditedTranscript(e.target.value)}
+                placeholder="AI가 수정한 내용이 여기에 표시됩니다."
+                className="textarea-md"
+                style={{ borderColor: '#0066cc' }}
+              />
+              <p className="help" style={{ marginTop: 4 }}>
+                <CheckCircle2 size={14} /> 내용을 확인하고 '수정 승인'을 클릭하면 이 내용을 기반으로 최종 문서를 작성할 수 있습니다.
+              </p>
+            </div>
+          )}
+
+          <hr style={{ margin: '24px 0', border: 'none', borderTop: '1px solid #ddd' }} />
+
+          {/* 최종 문서 작성 */}
+          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 24 }}>
+            <Brain size={18} /> 3) 최종 문서 작성
+          </h2>
+          <p className="help" style={{ marginBottom: 16 }}>
+            {geminiEnabled === null && (<><AlertCircle size={14} /> 서버 연결 상태를 확인 중입니다.</>)}
+            {geminiEnabled === false && (<><AlertCircle size={14} /> 서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정).</>)}
+            {geminiEnabled === true && (<><CheckCircle2 size={14} /> {editedTranscript ? '수정된 내용을 기반으로' : '원본 내용을 기반으로'} 최종 문서를 작성할 수 있습니다.</>)}
+          </p>
+
+          <div className="controls" style={{ marginBottom: 16 }}>
             <label className="grow">
-              형식
+              문서 형식
               <select value={formatId} onChange={(e) => setFormatId(e.target.value as FormatId)} className="mt-8">
                 {formatOptions.map(f => (
                   <option key={f.id} value={f.id}>{f.label}</option>
                 ))}
               </select>
             </label>
-            <button className="btn btn-primary" onClick={composeWithGemini} disabled={geminiEnabled === false || isComposing} aria-busy={isComposing}>
-              {isComposing ? (<><Loader2 size={16} /> 작성 중...</>) : '지침대로 문서 작성'}
-            </button>
-          </div>
-          <p className="help">
-            {geminiEnabled === null && (<><AlertCircle size={14} /> 서버 연결 상태를 확인 중입니다.</>)}
-            {geminiEnabled === false && (<><AlertCircle size={14} /> 서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정).</>)}
-            {geminiEnabled === true && (<><CheckCircle2 size={14} /> Gemini 설정이 감지되었습니다. 문서 작성이 가능합니다.</>)}
-          </p>
-          <div style={{ position: 'relative' }}>
-            <textarea
-              value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
-              placeholder="수정 요청/추가 지침을 입력하세요 (예: 300자 이내 요약, 공손한 어조로 재작성 등) 또는 🎤 음성으로 지시하세요"
-              className="textarea-sm mt-8"
-              disabled={isProcessingInstruction}
-              style={{ paddingRight: 60 }}
-            />
             <button
-              aria-label="음성으로 지시"
-              title={isRecordingInstruction ? '음성 지시 정지' : '음성으로 지시'}
-              onClick={() => (isRecordingInstruction ? stopRecordingInstruction() : startRecordingInstruction())}
-              className={`icon-btn ${isRecordingInstruction ? 'recording' : ''}`}
-              disabled={isProcessingInstruction}
-              style={{
-                position: 'absolute',
-                right: 8,
-                top: '50%',
-                transform: 'translateY(-50%)',
-                width: 40,
-                height: 40,
-                minWidth: 40,
-              }}
+              className="btn btn-primary"
+              onClick={composeWithGemini}
+              disabled={geminiEnabled === false || isComposing || (!transcript.trim() && !editedTranscript.trim())}
+              aria-busy={isComposing}
             >
-              {isRecordingInstruction ? <Square size={20} /> : <Mic size={20} />}
+              {isComposing ? (<><Loader2 size={16} /> 작성 중...</>) : '최종 문서 작성'}
             </button>
           </div>
-          {isRecordingInstruction && (
-            <p className="help" style={{ marginTop: 4 }}>
-              <CheckCircle2 size={14} /> 음성 지시를 녹음 중입니다. 정지 버튼을 눌러 녹음을 종료하세요.
-            </p>
-          )}
-          {isProcessingInstruction && (
-            <p className="help" style={{ marginTop: 4 }}>
-              <Loader2 size={14} /> 음성을 텍스트로 변환 중입니다...
-            </p>
-          )}
+
           <textarea
             value={composedText}
             onChange={(e) => setComposedText(e.target.value)}
-            placeholder="선택한 형식과 숨은 프롬프트에 따라 생성된 문서를 편집할 수 있습니다."
-            className="textarea-lg mt-8"
+            placeholder="선택한 형식에 맞춰 생성된 최종 문서가 여기에 표시됩니다."
+            className="textarea-lg"
           />
           <div className="controls mt-8">
             <button className="btn" onClick={saveDocument}>저장</button>
-            <button className="btn btn-outline" onClick={() => setComposedText('')}>삭제(편집중인 문서)</button>
+            <button className="btn btn-outline" onClick={() => setComposedText('')}>삭제</button>
           </div>
         </section>
 
