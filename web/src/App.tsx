@@ -36,6 +36,7 @@ function App() {
   const recordingStartTimeRef = useRef<number>(0)
   const recordingTimerRef = useRef<number | null>(null)
   const chunkIntervalRef = useRef<number | null>(null) // 1분마다 청크 전송용
+  const lastProcessedChunkIndexRef = useRef<number>(0) // 마지막으로 처리한 청크 인덱스
 
   const recordRef = useRef<HTMLDivElement | null>(null)
   const composeRef = useRef<HTMLDivElement | null>(null)
@@ -148,6 +149,7 @@ function App() {
       const recorder = new MediaRecorder(stream, { mimeType })
       mediaRecorderRef.current = recorder
       audioChunksRef.current = []
+      lastProcessedChunkIndexRef.current = 0 // 초기화
 
       // 녹음 시간 타이머 시작
       recordingStartTimeRef.current = Date.now()
@@ -159,29 +161,35 @@ function App() {
 
       recorder.ondataavailable = async (event) => {
         if (event.data.size > 0) {
-          console.log(`[녹음] 청크 수신: ${event.data.size} bytes`)
+          // 모든 청크를 누적 저장
+          audioChunksRef.current.push(event.data)
+          const currentIndex = audioChunksRef.current.length
+          console.log(`[녹음] 청크 저장: ${event.data.size} bytes (총 ${currentIndex}개)`)
 
-          // 각 30초 청크를 독립적으로 즉시 처리 (누적하지 않음)
-          const chunkBlob = event.data
-          const chunkSizeKB = chunkBlob.size / 1024
-          const chunkSizeMB = (chunkBlob.size / 1024 / 1024).toFixed(2)
-
-          // 무음 구간 감지: 30초 녹음이 5KB 미만이면 거의 무음으로 간주하고 건너뜀
-          if (chunkSizeKB < 5) {
-            console.log(`[청크 STT] 무음 감지로 건너뜀: ${chunkSizeMB} MB (${chunkSizeKB.toFixed(1)} KB)`)
-            return
-          }
-
-          console.log(`[청크 STT] 처리 시작: ${chunkSizeMB} MB (${chunkSizeKB.toFixed(1)} KB)`)
-
-          // 녹음 중에는 즉시 STT 처리 (백그라운드, 녹음 방해 안 함)
+          // 녹음 중일 때만 새로운 청크들을 STT 처리
           if (recorder.state === 'recording') {
-            processAudioToText(chunkBlob, mimeType, 30, true).catch(err => {
+            // 아직 처리하지 않은 새 청크들만 추출
+            const newChunks = audioChunksRef.current.slice(lastProcessedChunkIndexRef.current)
+            const newAudioBlob = new Blob(newChunks, { type: mimeType })
+            const newSizeKB = newAudioBlob.size / 1024
+            const newSizeMB = (newAudioBlob.size / 1024 / 1024).toFixed(2)
+
+            console.log(`[청크 STT] 새 청크 ${lastProcessedChunkIndexRef.current + 1}~${currentIndex}: ${newSizeMB} MB`)
+
+            // 무음 감지: 새 청크가 너무 작으면 건너뜀
+            if (newSizeKB < 5) {
+              console.log(`[청크 STT] 무음 감지로 건너뜀`)
+              lastProcessedChunkIndexRef.current = currentIndex // 다음번을 위해 업데이트
+              return
+            }
+
+            // 마지막 처리 위치 업데이트
+            lastProcessedChunkIndexRef.current = currentIndex
+
+            // 백그라운드로 STT 처리 (녹음 방해 안 함)
+            processAudioToText(newAudioBlob, mimeType, 30, true).catch(err => {
               console.error('[청크 STT] 처리 실패:', err)
             })
-          } else {
-            // 녹음 종료 시점의 마지막 청크는 onstop에서 처리
-            audioChunksRef.current.push(event.data)
           }
         }
       }
