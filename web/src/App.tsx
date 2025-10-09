@@ -53,7 +53,7 @@ function App() {
   // 하이브리드 녹음: Android는 MediaRecorder, iOS는 Web Speech API
   const [useMediaRecorder, setUseMediaRecorder] = useState(false)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const CHUNK_INTERVAL_MS = 5000 // 5초마다 청크 전송
+  const CHUNK_INTERVAL_MS = 8000 // 8초마다 청크 전송 (STT 인식률 향상)
   const [debugInfo, setDebugInfo] = useState<string>('')
 
   useEffect(() => {

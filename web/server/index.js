@@ -35,28 +35,26 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
 
     // 포맷 감지
     let encoding = 'WEBM_OPUS';
-    let sampleRate = 48000;
 
     if (mimeType?.includes('mp4')) {
-      // iOS는 MP4를 보내므로 LINEAR16로 처리 시도
       encoding = 'LINEAR16';
-      sampleRate = 16000;
     }
 
+    // 샘플레이트 자동 감지를 위해 제거 (Google STT가 자동으로 감지)
     const request = {
       audio: { content: audioBytes },
       config: {
         encoding,
-        sampleRateHertz: sampleRate,
+        // sampleRateHertz 제거 - 자동 감지
         languageCode: 'ko-KR',
-        model: 'latest_long',
+        model: 'default',  // latest_long → default (더 안정적)
         audioChannelCount: 1,
         enableAutomaticPunctuation: true,
         useEnhanced: true,
       },
     };
 
-    console.log(`[STT] Google STT 요청: encoding=${encoding}, sampleRate=${sampleRate}`);
+    console.log(`[STT] Google STT 요청: encoding=${encoding}, auto sample rate`);
     const [response] = await speechClient.recognize(request);
 
     const transcription = response.results
