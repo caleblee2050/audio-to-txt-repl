@@ -50,7 +50,12 @@ function App() {
   const ENERGY_RMS_THRESHOLD = 0.008 // 말소리 존재 추정 임계값(모바일 마이크 감도 고려하여 낮춤)
   const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
 
-  // STT/퍼지 교정 기능 제거됨: UI/상태 삭제
+  // 하이브리드 녹음: Android는 MediaRecorder, iOS는 Web Speech API
+  const [useMediaRecorder, setUseMediaRecorder] = useState(false)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const chunkIntervalRef = useRef<number | null>(null)
+  const CHUNK_INTERVAL_MS = 5000 // 5초마다 청크 전송
 
   useEffect(() => {
     // 로컬 저장된 문서 불러오기
@@ -83,6 +88,21 @@ function App() {
   // 라이트 모드 제거: 기본 다크 모드 고정
   useEffect(() => {
     document.documentElement.dataset.theme = ''
+  }, [])
+
+  // 플랫폼 감지: Android는 MediaRecorder, iOS는 Web Speech API
+  useEffect(() => {
+    const isAndroid = /Android/.test(navigator.userAgent)
+
+    // Android Chrome에서만 MediaRecorder 사용 (끊김 없음)
+    // iOS Safari는 Web Speech API 유지 (끊김 있지만 작동)
+    if (isAndroid && typeof MediaRecorder !== 'undefined') {
+      setUseMediaRecorder(true)
+      console.log('Android 감지: MediaRecorder 모드 활성화')
+    } else {
+      setUseMediaRecorder(false)
+      console.log('iOS 또는 기타 플랫폼: Web Speech API 모드')
+    }
   }, [])
 
   const scrollTo = (ref: React.RefObject<HTMLDivElement | null>, tab: 'record' | 'compose' | 'saved') => {
@@ -282,7 +302,101 @@ function App() {
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
+  // MediaRecorder 방식: 끊김 없는 녹음 (Android)
+  const startMediaRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      mediaStreamRef.current = stream
+
+      // MIME 타입 감지 (Android: webm, iOS: mp4)
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/mp4'
+
+      const recorder = new MediaRecorder(stream, { mimeType })
+      mediaRecorderRef.current = recorder
+      audioChunksRef.current = []
+
+      let currentText = transcript
+
+      recorder.ondataavailable = async (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data)
+
+          // 5초마다 서버로 전송하여 STT 처리
+          const audioBlob = new Blob(audioChunksRef.current, { type: mimeType })
+          audioChunksRef.current = [] // 청크 초기화
+
+          try {
+            const reader = new FileReader()
+            reader.onloadend = async () => {
+              const base64 = (reader.result as string).split(',')[1]
+              const resp = await fetch(`${API_BASE}/api/stt/recognize-chunk`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ audioData: base64, mimeType }),
+              })
+              const data = await resp.json()
+              if (data.text) {
+                currentText += (currentText ? '\n' : '') + data.text
+                setTranscript(currentText)
+              }
+            }
+            reader.readAsDataURL(audioBlob)
+          } catch (err) {
+            console.error('STT 전송 실패:', err)
+          }
+        }
+      }
+
+      recorder.start()
+
+      // 5초마다 데이터 청크 요청
+      chunkIntervalRef.current = window.setInterval(() => {
+        if (recorder.state === 'recording') {
+          recorder.requestData()
+        }
+      }, CHUNK_INTERVAL_MS)
+
+      setIsRecording(true)
+      isRecordingRef.current = true
+      acquireWakeLock()
+    } catch (err) {
+      console.error('MediaRecorder 시작 실패:', err)
+      alert('마이크 권한을 허용해 주세요.')
+    }
+  }
+
+  const stopMediaRecording = () => {
+    if (mediaRecorderRef.current) {
+      try {
+        mediaRecorderRef.current.stop()
+        mediaRecorderRef.current = null
+      } catch {}
+    }
+
+    if (chunkIntervalRef.current) {
+      clearInterval(chunkIntervalRef.current)
+      chunkIntervalRef.current = null
+    }
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop())
+      mediaStreamRef.current = null
+    }
+
+    setIsRecording(false)
+    isRecordingRef.current = false
+    awaitWakeRelease()
+  }
+
   const startRecording = async () => {
+    // Android: MediaRecorder 사용 (끊김 없음)
+    if (useMediaRecorder) {
+      return startMediaRecording()
+    }
+
+    // iOS: Web Speech API 사용 (끊김 있지만 작동)
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (!SpeechRecognition) {
       alert('브라우저가 음성 인식을 지원하지 않습니다. Chrome을 사용해 주세요.')
@@ -457,6 +571,12 @@ function App() {
   }
 
   const stopRecording = () => {
+    // Android: MediaRecorder 정지
+    if (useMediaRecorder) {
+      return stopMediaRecording()
+    }
+
+    // iOS: Web Speech API 정지
     const rec = recognitionRef.current
     // 재시작 루프를 방지하기 위해 먼저 플래그를 내리고 이벤트를 해제합니다.
     isRecordingRef.current = false
@@ -610,6 +730,12 @@ function App() {
         )}
           <p className="help">
             <Mic size={14} /> 마이크 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 녹음 중에는 텍스트가 실시간으로 누적됩니다.
+            {useMediaRecorder && (
+              <><br/><CheckCircle2 size={14} /> Android 감지: 끊김 없는 MediaRecorder 모드 활성화</>
+            )}
+            {!useMediaRecorder && (
+              <><br/><AlertCircle size={14} /> iOS/기타: Web Speech API 모드 (말을 멈추면 일시적으로 끊길 수 있음)</>
+            )}
           </p>
           <textarea
             value={transcript}

@@ -1,40 +1,68 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-// Twilio 제거: 문자 발송 기능 삭제
-// Google Cloud Speech-to-Text 클라이언트 추가
-// STT/퍼지 교정 기능 제거
-// import { SpeechClient } from '@google-cloud/speech';
-// import stringSimilarity from 'string-similarity';
+import { SpeechClient } from '@google-cloud/speech';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
-// GoogleGenerativeAI SDK 사용 시 버전/모델 불일치로 오류가 발생하여
-// 안정적인 REST 호출로 변경합니다.
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // 오디오 데이터 전송을 위해 제한 증가
 
 const { GOOGLE_API_KEY } = process.env;
-// const speechClient = new SpeechClient();
+const speechClient = new SpeechClient();
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, geminiConfigured: !!GOOGLE_API_KEY });
 });
 
-// 문자 발송 기능 삭제됨
+// MediaRecorder 오디오 청크를 받아서 Google Cloud STT로 변환
+// 요청: { audioData: base64, mimeType: 'audio/webm;codecs=opus' }
+// 응답: { text: string }
+app.post('/api/stt/recognize-chunk', async (req, res) => {
+  try {
+    const { audioData, mimeType } = req.body;
+    if (!audioData) {
+      return res.status(400).json({ error: 'Missing audioData' });
+    }
 
-// Google STT: Speech Adaptation을 활용한 동기 인식 엔드포인트
-// 요청 형식: { gcsUri?: string, audioBase64?: string, languageCode?: string, sampleRateHertz?: number, phrases?: string[], boost?: number, encoding?: 'LINEAR16'|'WEBM_OPUS'|'FLAC' }
-// STT 엔드포인트 제거됨
+    // Base64 디코딩
+    const audioBytes = Buffer.from(audioData, 'base64');
 
-// Fuzzy Matching: 이름 교정 엔드포인트
-// 요청 형식: { text: string, nameList: string[], threshold?: number }
-// 응답: { correctedText: string, matches: Array<{ original: string, replacement: string, rating: number }> }
-// 퍼지 교정 엔드포인트 제거됨
+    // 포맷 감지
+    let encoding = 'WEBM_OPUS';
+    if (mimeType?.includes('mp4')) {
+      // iOS는 MP4를 보내므로 LINEAR16로 처리 시도
+      encoding = 'LINEAR16';
+    }
+
+    const request = {
+      audio: { content: audioBytes },
+      config: {
+        encoding,
+        sampleRateHertz: 48000, // WebM Opus 기본값
+        languageCode: 'ko-KR',
+        model: 'default',
+        audioChannelCount: 1,
+        enableAutomaticPunctuation: true,
+      },
+    };
+
+    const [response] = await speechClient.recognize(request);
+    const transcription = response.results
+      ?.map(result => result.alternatives?.[0]?.transcript || '')
+      .join('\n')
+      .trim();
+
+    res.json({ text: transcription || '' });
+  } catch (err) {
+    console.error('STT error:', err);
+    res.status(500).json({ error: 'STT failed', details: String(err?.message || err) });
+  }
+});
 
 // Gemini compose endpoint
 app.post('/api/compose', async (req, res) => {
