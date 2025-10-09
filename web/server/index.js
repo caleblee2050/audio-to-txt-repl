@@ -32,50 +32,81 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
     // Base64 디코딩
     const audioBytes = Buffer.from(audioData, 'base64');
     const audioSizeMB = (audioBytes.length / 1024 / 1024).toFixed(2);
-    console.log(`[STT] 청크 수신: ${audioBytes.length} bytes (${audioSizeMB} MB), ${mimeType}`);
-
-    // Google Cloud STT 제한: recognize API는 1분 이하, 10MB 이하만 지원
-    if (audioBytes.length > 10 * 1024 * 1024) {
-      console.error(`[STT] 오디오 크기 초과: ${audioSizeMB} MB > 10 MB`);
-      return res.status(413).json({
-        error: 'Audio too large',
-        details: `오디오 파일이 너무 큽니다 (${audioSizeMB} MB). 1분 이내로 녹음해 주세요.`
-      });
-    }
+    const audioSizeBytes = audioBytes.length;
+    console.log(`[STT] 청크 수신: ${audioSizeBytes} bytes (${audioSizeMB} MB), ${mimeType}`);
 
     // 포맷 감지
     let encoding = 'WEBM_OPUS';
-
     if (mimeType?.includes('mp4')) {
       encoding = 'LINEAR16';
     }
 
-    // 긴 오디오를 위한 설정 개선
-    const request = {
-      audio: { content: audioBytes },
-      config: {
-        encoding,
-        languageCode: 'ko-KR',
-        model: 'latest_long',  // latest_long 모델 사용
-        audioChannelCount: 1,
-        enableAutomaticPunctuation: true,
-        // useEnhanced: true는 long 모델과 호환되지 않음
-        // 긴 오디오를 위한 추가 설정
-        enableWordTimeOffsets: false,
-        enableWordConfidence: false,
-      },
+    // 오디오 길이 추정 (대략적)
+    // WEBM_OPUS: ~12KB/sec, 1분 = ~720KB
+    const estimatedDurationSec = encoding === 'WEBM_OPUS' ? audioSizeBytes / 12000 : audioSizeBytes / 32000;
+    console.log(`[STT] 예상 길이: ${estimatedDurationSec.toFixed(1)}초`);
+
+    const config = {
+      encoding,
+      languageCode: 'ko-KR',
+      audioChannelCount: 1,
+      enableAutomaticPunctuation: true,
+      enableWordTimeOffsets: false,
+      enableWordConfidence: false,
     };
 
-    console.log(`[STT] Google STT 요청: encoding=${encoding}, model=latest_long, size=${audioSizeMB} MB`);
-    const [response] = await speechClient.recognize(request);
+    let transcription = '';
 
-    const transcription = response.results
-      ?.map(result => result.alternatives?.[0]?.transcript || '')
-      .join('\n')
-      .trim();
+    // 1분 이하: recognize API (빠름)
+    if (estimatedDurationSec <= 60) {
+      console.log(`[STT] recognize API 사용 (짧은 오디오)`);
+      const request = {
+        audio: { content: audioBytes },
+        config: {
+          ...config,
+          model: 'default',  // 짧은 오디오는 default 모델
+        },
+      };
+
+      const [response] = await speechClient.recognize(request);
+      transcription = response.results
+        ?.map(result => result.alternatives?.[0]?.transcript || '')
+        .join('\n')
+        .trim();
+    } else {
+      // 1분 초과: longRunningRecognize API (느리지만 긴 오디오 지원)
+      console.log(`[STT] longRunningRecognize API 사용 (긴 오디오)`);
+
+      // 최대 10분 제한 (비용 및 처리 시간 고려)
+      if (estimatedDurationSec > 600) {
+        return res.status(413).json({
+          error: 'Audio too long',
+          details: `오디오가 너무 깁니다 (약 ${(estimatedDurationSec / 60).toFixed(1)}분). 10분 이내로 녹음해 주세요.`
+        });
+      }
+
+      const request = {
+        audio: { content: audioBytes },
+        config: {
+          ...config,
+          model: 'latest_long',  // 긴 오디오는 latest_long 모델
+        },
+      };
+
+      const [operation] = await speechClient.longRunningRecognize(request);
+      console.log(`[STT] 장기 작업 시작... (예상 ${estimatedDurationSec.toFixed(1)}초 오디오)`);
+
+      // 작업 완료 대기 (최대 5분)
+      const [response] = await operation.promise();
+
+      transcription = response.results
+        ?.map(result => result.alternatives?.[0]?.transcript || '')
+        .join('\n')
+        .trim();
+    }
 
     if (!transcription) {
-      console.warn(`[STT] 빈 결과 반환 (오디오 크기: ${audioSizeMB} MB)`);
+      console.warn(`[STT] 빈 결과 반환 (오디오 크기: ${audioSizeMB} MB, 예상 ${estimatedDurationSec.toFixed(1)}초)`);
     } else {
       console.log(`[STT] 결과: "${transcription.substring(0, 100)}..." (${transcription.length} chars)`);
     }
@@ -87,8 +118,8 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
     console.error('[STT] 상세 오류:', errorMsg);
     res.status(500).json({
       error: 'STT failed',
-      details: errorMsg.includes('exceeds')
-        ? '오디오가 너무 깁니다. 1분 이내로 녹음해 주세요.'
+      details: errorMsg.includes('exceeds') || errorMsg.includes('too long')
+        ? '오디오가 너무 깁니다. 10분 이내로 녹음해 주세요.'
         : errorMsg
     });
   }

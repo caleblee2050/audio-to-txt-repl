@@ -195,12 +195,15 @@ function App() {
     setIsProcessing(true)
     try {
       const audioSizeMB = (audioBlob.size / 1024 / 1024).toFixed(2)
-      console.log(`[STT] 오디오 크기: ${audioSizeMB} MB`)
+      const audioSizeKB = audioBlob.size / 1024
+      // 대략적인 길이 추정 (WEBM_OPUS: ~12KB/sec)
+      const estimatedDurationSec = audioSizeKB / 12
+      console.log(`[STT] 오디오 크기: ${audioSizeMB} MB, 예상 길이: ${estimatedDurationSec.toFixed(1)}초`)
 
       const reader = new FileReader()
       reader.onloadend = async () => {
         const base64 = (reader.result as string).split(',')[1]
-        console.log(`[STT] 전송 시작: ${base64?.length || 0} chars (${audioSizeMB} MB)`)
+        console.log(`[STT] 전송 시작: ${base64?.length || 0} chars (${audioSizeMB} MB, 약 ${estimatedDurationSec.toFixed(1)}초)`)
 
         try {
           const resp = await fetch(`${API_BASE}/api/stt/recognize-chunk`, {
@@ -216,7 +219,7 @@ function App() {
             // 서버 에러 처리
             console.error('[STT] 서버 에러:', data)
             if (resp.status === 413) {
-              alert(data.details || '오디오 파일이 너무 큽니다. 1분 이내로 녹음해 주세요.')
+              alert(data.details || '오디오 파일이 너무 큽니다. 10분 이내로 녹음해 주세요.')
             } else {
               alert(data.details || '음성 변환 중 오류가 발생했습니다.')
             }
@@ -227,7 +230,7 @@ function App() {
             setTranscript(prev => prev ? prev + '\n' + data.text : data.text)
             console.log(`[STT] 성공: ${data.text.length} chars`)
           } else {
-            console.warn('[STT] 빈 응답 (오디오 크기:', audioSizeMB, 'MB)')
+            console.warn('[STT] 빈 응답 (오디오 크기:', audioSizeMB, 'MB, 예상', estimatedDurationSec.toFixed(1), '초)')
             alert('음성이 인식되지 않았습니다. 명확하게 말씀해 주시거나, 녹음 시간을 줄여 주세요.')
           }
         } catch (err) {
@@ -529,7 +532,7 @@ function App() {
             )}
             {isProcessing && (
               <p className="help" style={{ margin: 0 }}>
-                <Loader2 size={16} /> 음성을 텍스트로 변환 중입니다. 잠시만 기다려 주세요...
+                <Loader2 size={16} /> 음성을 텍스트로 변환 중입니다. 긴 오디오는 처리에 시간이 걸릴 수 있습니다...
               </p>
             )}
             {!isRecording && !isProcessing && (
