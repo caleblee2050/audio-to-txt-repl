@@ -34,7 +34,7 @@ function App() {
   // 중복 재시작 예약을 방지하기 위한 타이머 핸들
   const restartTimeoutRef = useRef<number | null>(null)
   // 말이 멈춘 이후 자동 종료 임계시간(무음 지속 시간)
-  const SILENCE_RESTART_DELAY_MS = 180000 // 3분 (긴 무음 후 자동 종료)
+  const SILENCE_RESTART_DELAY_MS = 20000 // 20초 (긴 무음 후 자동 종료)
   const silenceTimeoutRef = useRef<number | null>(null)
   const silenceWatcherRef = useRef<number | null>(null)
   const lastSpeechTsRef = useRef<number>(Date.now())
@@ -251,7 +251,7 @@ function App() {
   }
 
   const startSilenceWatcher = () => {
-    // 주기적으로 마지막 발화 시점과 현재 시간을 비교하여 무음 60초 초과 시 자동 종료
+    // 주기적으로 마지막 발화 시점과 현재 시간을 비교하여 무음 20초 초과 시 자동 종료
     if (silenceWatcherRef.current) {
       clearInterval(silenceWatcherRef.current)
       silenceWatcherRef.current = null
@@ -263,7 +263,9 @@ function App() {
         return
       }
       const silenceFor = Date.now() - lastSpeechTsRef.current
-      if (silenceFor >= SILENCE_RESTART_DELAY_MS) {
+      // 20초 무음 시 자동 종료 (모바일에서 긴 대기 시간 확보)
+      if (silenceFor >= 20000) {
+        console.log('20초 무음 감지, 녹음 종료')
         stopRecording()
       }
     }, 1000)
@@ -336,8 +338,17 @@ function App() {
           recognitionRef.current = null
           return
         }
-        setIsRecording(true)
-        attemptRestart('silence')
+        // 갤럭시 등 모바일에서 onend가 빈번히 발생하여 끊김 유발
+        // 마지막 발화 이후 20초 이상 경과했을 때만 재시작 시도
+        const silenceFor = Date.now() - lastSpeechTsRef.current
+        if (silenceFor < 20000) {
+          // 20초 미만이면 즉시 재시작하여 끊김 없이 유지
+          setIsRecording(true)
+          attemptRestart('silence')
+        } else {
+          // 20초 이상 무음이면 자연스럽게 종료 대기
+          setIsRecording(true)
+        }
       }
       ;(rec as any).onstart = () => {
         try { acquireWakeLock() } catch {}
@@ -361,55 +372,39 @@ function App() {
         restartInfoRef.current.count = 0
       }
 
-      // 오류로 인한 재시작이 과도하게 반복되면 재시도만 중단하고, 60초 자동 종료를 기다립니다.
+      // 오류로 인한 재시작이 과도하게 반복되면 재시도만 중단하고, 20초 자동 종료를 기다립니다.
       if (cause === 'error' && restartInfoRef.current.count >= 5) {
-        console.warn('음성 인식 오류가 반복되어 재시작을 중단합니다. 60초 후 자동 종료됩니다.')
-        alert('마이크 입력이 불안정합니다. 재시도는 중단하고 60초 무음 후 자동 종료됩니다.')
+        console.warn('음성 인식 오류가 반복되어 재시작을 중단합니다. 20초 후 자동 종료됩니다.')
+        alert('마이크 입력이 불안정합니다. 재시도는 중단하고 20초 무음 후 자동 종료됩니다.')
         return
       }
 
       const rec = recognitionRef.current
       if (cause === 'silence') {
+        // 즉시 재시작으로 끊김 완전 제거
         if (restartTimeoutRef.current) return
-        // 짧은 무음으로 인한 엔진 종료 시 신속 재시작(최대 2회 재시도)
-        const tryStart = (delay: number) => {
-          restartTimeoutRef.current = window.setTimeout(() => {
-            restartTimeoutRef.current = null
-            if (!isRecordingRef.current) return
-            try {
-              try { rec?.stop?.() } catch {}
-              rec?.start()
-            } catch (e) {
-              console.warn('Silence restart failed:', e)
-              // 두 번째 재시도(지연 증가)
-              if (delay < 1000) {
-                restartTimeoutRef.current = window.setTimeout(() => {
-                  restartTimeoutRef.current = null
-                  if (isRecordingRef.current) {
-                    try {
-                      try { rec?.stop?.() } catch {}
-                      rec?.start()
-                    } catch {
-                      // 객체가 망가진 경우 새로 생성하여 재시도
-                      const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-                      if (SR) {
-                        const newRec = new SR()
-                        newRec.continuous = true
-                        newRec.interimResults = true
-                        newRec.lang = 'ko-KR'
-                        try { (newRec as any).maxAlternatives = 1 } catch {}
-                        recognitionRef.current = newRec
-                        attachHandlers(newRec)
-                        try { newRec.start() } catch {}
-                      }
-                    }
-                  }
-                }, 1000)
-              }
+        restartTimeoutRef.current = window.setTimeout(() => {
+          restartTimeoutRef.current = null
+          if (!isRecordingRef.current) return
+          try {
+            try { rec?.stop?.() } catch {}
+            rec?.start()
+          } catch (e) {
+            console.warn('Silence restart failed:', e)
+            // 실패 시 새 인식 객체 생성
+            const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+            if (SR) {
+              const newRec = new SR()
+              newRec.continuous = true
+              newRec.interimResults = true
+              newRec.lang = 'ko-KR'
+              try { (newRec as any).maxAlternatives = 1 } catch {}
+              recognitionRef.current = newRec
+              attachHandlers(newRec)
+              try { newRec.start() } catch {}
             }
-          }, delay)
-        }
-        tryStart(200)  // 500ms → 200ms로 단축하여 모바일에서 끊김 체감 감소
+          }
+        }, 100)  // 100ms로 최소화하여 끊김 없이 즉시 재시작
         return
       }
 
