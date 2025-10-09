@@ -53,9 +53,8 @@ function App() {
   // 하이브리드 녹음: Android는 MediaRecorder, iOS는 Web Speech API
   const [useMediaRecorder, setUseMediaRecorder] = useState(false)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
-  const chunkIntervalRef = useRef<number | null>(null)
   const CHUNK_INTERVAL_MS = 5000 // 5초마다 청크 전송
+  const [debugInfo, setDebugInfo] = useState<string>('')
 
   useEffect(() => {
     // 로컬 저장된 문서 불러오기
@@ -315,79 +314,88 @@ function App() {
 
       const recorder = new MediaRecorder(stream, { mimeType })
       mediaRecorderRef.current = recorder
-      audioChunksRef.current = []
 
       recorder.ondataavailable = async (event) => {
         if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data)
+          const timestamp = new Date().toLocaleTimeString()
+          setDebugInfo(`[${timestamp}] 청크: ${event.data.size} bytes`)
+          console.log(`[MediaRecorder] 청크 생성: ${event.data.size} bytes`)
 
-          // 5초마다 서버로 전송하여 STT 처리
-          const audioBlob = new Blob(audioChunksRef.current, { type: mimeType })
-          audioChunksRef.current = [] // 청크 초기화
-
+          // 즉시 서버로 전송하여 STT 처리
           try {
             const reader = new FileReader()
             reader.onloadend = async () => {
               const base64 = (reader.result as string).split(',')[1]
-              console.log('STT 청크 전송 중...', base64.length, 'bytes')
+              setDebugInfo(prev => `${prev}\n[${timestamp}] STT 전송 중...`)
+              console.log(`[STT] 전송 시작: ${base64?.length || 0} chars`)
 
-              const resp = await fetch(`${API_BASE}/api/stt/recognize-chunk`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ audioData: base64, mimeType }),
-              })
-              const data = await resp.json()
-
-              console.log('STT 응답:', data)
-
-              if (data.text) {
-                // 함수형 업데이트로 최신 상태 참조
-                setTranscript(prev => {
-                  const updated = prev ? prev + '\n' + data.text : data.text
-                  console.log('텍스트 업데이트:', updated)
-                  return updated
+              try {
+                const resp = await fetch(`${API_BASE}/api/stt/recognize-chunk`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ audioData: base64, mimeType }),
                 })
-              } else {
-                console.warn('STT 결과 없음 (무음 또는 인식 실패)')
+                const data = await resp.json()
+
+                console.log('[STT] 응답:', data)
+
+                if (data.text) {
+                  setDebugInfo(prev => `${prev}\n[${timestamp}] ✅ "${data.text}"`)
+                  // 함수형 업데이트로 최신 상태 참조
+                  setTranscript(prev => {
+                    const updated = prev ? prev + '\n' + data.text : data.text
+                    console.log(`[텍스트] 업데이트 완료 (총 ${updated.length} chars)`)
+                    return updated
+                  })
+                } else {
+                  setDebugInfo(prev => `${prev}\n[${timestamp}] ⚠️ 무음/인식실패`)
+                  console.warn('[STT] 결과 없음 (무음 또는 인식 실패)')
+                }
+              } catch (err) {
+                setDebugInfo(prev => `${prev}\n[${timestamp}] ❌ 오류: ${err}`)
+                console.error('[STT] 전송 실패:', err)
               }
             }
-            reader.readAsDataURL(audioBlob)
+            reader.readAsDataURL(event.data)
           } catch (err) {
-            console.error('STT 전송 실패:', err)
+            console.error('[FileReader] 실패:', err)
           }
+        } else {
+          console.warn('[MediaRecorder] 빈 청크 수신')
         }
       }
 
-      recorder.start()
+      recorder.onerror = (event) => {
+        console.error('[MediaRecorder] 오류:', event)
+      }
 
-      // 5초마다 데이터 청크 요청
-      chunkIntervalRef.current = window.setInterval(() => {
-        if (recorder.state === 'recording') {
-          recorder.requestData()
-        }
-      }, CHUNK_INTERVAL_MS)
+      recorder.onstop = () => {
+        console.log('[MediaRecorder] 정지됨')
+      }
+
+      // 5초마다 자동으로 ondataavailable 호출 (timeslice)
+      recorder.start(CHUNK_INTERVAL_MS)
+      console.log(`[MediaRecorder] 시작: ${mimeType}, ${CHUNK_INTERVAL_MS}ms 청크`)
 
       setIsRecording(true)
       isRecordingRef.current = true
       acquireWakeLock()
-      console.log('MediaRecorder 녹음 시작:', mimeType)
     } catch (err) {
-      console.error('MediaRecorder 시작 실패:', err)
+      console.error('[MediaRecorder] 시작 실패:', err)
       alert('마이크 권한을 허용해 주세요.')
     }
   }
 
   const stopMediaRecording = () => {
-    if (mediaRecorderRef.current) {
+    console.log('[MediaRecorder] 정지 요청')
+
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
         mediaRecorderRef.current.stop()
-        mediaRecorderRef.current = null
-      } catch {}
-    }
-
-    if (chunkIntervalRef.current) {
-      clearInterval(chunkIntervalRef.current)
-      chunkIntervalRef.current = null
+      } catch (err) {
+        console.error('[MediaRecorder] 정지 실패:', err)
+      }
+      mediaRecorderRef.current = null
     }
 
     if (mediaStreamRef.current) {
@@ -753,6 +761,13 @@ function App() {
             placeholder="여기에 음성 인식 결과가 실시간으로 누적됩니다."
             className="textarea-md mt-8"
           />
+          {useMediaRecorder && debugInfo && (
+            <div style={{ marginTop: 8, padding: 8, background: '#1a1a1a', border: '1px solid #333', borderRadius: 4, fontSize: 12, fontFamily: 'monospace', whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto' }}>
+              <strong>🔍 디버그 로그:</strong>
+              <br/>
+              {debugInfo}
+            </div>
+          )}
         </section>
 
         <section ref={composeRef} className="section" id="compose">
