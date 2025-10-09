@@ -36,7 +36,7 @@ function App() {
   const recordingStartTimeRef = useRef<number>(0)
   const recordingTimerRef = useRef<number | null>(null)
   const chunkIntervalRef = useRef<number | null>(null) // 1분마다 청크 전송용
-  const lastProcessedChunkIndexRef = useRef<number>(0) // 마지막으로 처리한 청크 인덱스
+  const lastTranscriptLengthRef = useRef<number>(0) // 마지막으로 받은 transcript 길이
 
   const recordRef = useRef<HTMLDivElement | null>(null)
   const composeRef = useRef<HTMLDivElement | null>(null)
@@ -149,7 +149,7 @@ function App() {
       const recorder = new MediaRecorder(stream, { mimeType })
       mediaRecorderRef.current = recorder
       audioChunksRef.current = []
-      lastProcessedChunkIndexRef.current = 0 // 초기화
+      lastTranscriptLengthRef.current = 0 // 초기화
 
       // 녹음 시간 타이머 시작
       recordingStartTimeRef.current = Date.now()
@@ -161,33 +161,26 @@ function App() {
 
       recorder.ondataavailable = async (event) => {
         if (event.data.size > 0) {
-          // 모든 청크를 누적 저장
           audioChunksRef.current.push(event.data)
-          const currentIndex = audioChunksRef.current.length
-          console.log(`[녹음] 청크 저장: ${event.data.size} bytes (총 ${currentIndex}개)`)
+          console.log(`[녹음] 청크 저장: ${event.data.size} bytes (총 ${audioChunksRef.current.length}개)`)
 
-          // 녹음 중일 때만 새로운 청크들을 STT 처리
+          // 녹음 중일 때만 30초마다 전체 오디오로 STT 처리
           if (recorder.state === 'recording') {
-            // 아직 처리하지 않은 새 청크들만 추출
-            const newChunks = audioChunksRef.current.slice(lastProcessedChunkIndexRef.current)
-            const newAudioBlob = new Blob(newChunks, { type: mimeType })
-            const newSizeKB = newAudioBlob.size / 1024
-            const newSizeMB = (newAudioBlob.size / 1024 / 1024).toFixed(2)
+            const fullAudioBlob = new Blob(audioChunksRef.current, { type: mimeType })
+            const fullSizeKB = fullAudioBlob.size / 1024
+            const fullSizeMB = (fullAudioBlob.size / 1024 / 1024).toFixed(2)
+            const elapsedSec = Math.floor((Date.now() - recordingStartTimeRef.current) / 1000)
 
-            console.log(`[청크 STT] 새 청크 ${lastProcessedChunkIndexRef.current + 1}~${currentIndex}: ${newSizeMB} MB`)
+            console.log(`[청크 STT] 전체 오디오: ${fullSizeMB} MB, ${elapsedSec}초`)
 
-            // 무음 감지: 새 청크가 너무 작으면 건너뜀
-            if (newSizeKB < 5) {
+            // 무음 감지
+            if (fullSizeKB < 5) {
               console.log(`[청크 STT] 무음 감지로 건너뜀`)
-              lastProcessedChunkIndexRef.current = currentIndex // 다음번을 위해 업데이트
               return
             }
 
-            // 마지막 처리 위치 업데이트
-            lastProcessedChunkIndexRef.current = currentIndex
-
-            // 백그라운드로 STT 처리 (녹음 방해 안 함)
-            processAudioToText(newAudioBlob, mimeType, 30, true).catch(err => {
+            // 백그라운드로 STT 처리 (전체 오디오 전송, 서버는 전체 텍스트 반환)
+            processAudioToText(fullAudioBlob, mimeType, elapsedSec, true).catch(err => {
               console.error('[청크 STT] 처리 실패:', err)
             })
           }
@@ -230,7 +223,7 @@ function App() {
       }
 
       // 녹음 시작 (30초마다 ondataavailable 호출)
-      recorder.start(30000) // 30초 (파일 크기 제한 안전 마진)
+      recorder.start(30000) // 30초마다 청크 생성
       setIsRecording(true)
       acquireWakeLock()
       console.log(`[녹음] 시작: ${mimeType}, 30초마다 자동 STT 처리`)
@@ -292,8 +285,26 @@ function App() {
           }
 
           if (data.text) {
-            setTranscript(prev => prev ? prev + '\n' + data.text : data.text)
-            console.log(`[STT] 성공: ${data.text.length} chars`)
+            // 자동 청크 처리 시: 전체 텍스트가 오므로 중복 제거
+            if (isAutoChunk) {
+              // 이전에 받은 텍스트 길이만큼 건너뛰고 새로운 부분만 추출
+              const previousLength = lastTranscriptLengthRef.current
+              const newText = data.text.substring(previousLength)
+
+              if (newText.trim()) {
+                setTranscript(prev => prev ? prev + ' ' + newText : newText)
+                console.log(`[STT] 새 텍스트 추가: ${newText.length} chars (전체 ${data.text.length} chars 중)`)
+              } else {
+                console.log(`[STT] 중복 텍스트, 건너뜀 (전체 ${data.text.length} chars)`)
+              }
+
+              // 전체 길이 업데이트
+              lastTranscriptLengthRef.current = data.text.length
+            } else {
+              // 수동 처리 (녹음 종료 시): 그대로 설정
+              setTranscript(prev => prev ? prev + '\n' + data.text : data.text)
+              console.log(`[STT] 성공: ${data.text.length} chars`)
+            }
           } else {
             console.warn('[STT] 빈 응답 (오디오 크기:', audioSizeMB, 'MB,', durationSeconds, '초)')
             // 자동 청크 처리일 때는 alert 안 띄움 (녹음 중 방해하지 않음)
