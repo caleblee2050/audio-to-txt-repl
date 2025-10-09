@@ -25,15 +25,24 @@ function App() {
   const [isComposing, setIsComposing] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
 
+  // 음성 지시 녹음 상태
+  const [isRecordingInstruction, setIsRecordingInstruction] = useState(false)
+  const [isProcessingInstruction, setIsProcessingInstruction] = useState(false)
+
   const recordRef = useRef<HTMLDivElement | null>(null)
   const composeRef = useRef<HTMLDivElement | null>(null)
   const savedRef = useRef<HTMLDivElement | null>(null)
   const wakeLockRef = useRef<any>(null)
 
-  // MediaRecorder 녹음 방식
+  // 메인 녹음용 MediaRecorder
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
+
+  // 음성 지시용 MediaRecorder
+  const instructionRecorderRef = useRef<MediaRecorder | null>(null)
+  const instructionStreamRef = useRef<MediaStream | null>(null)
+  const instructionChunksRef = useRef<Blob[]>([])
 
   const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
 
@@ -224,6 +233,114 @@ function App() {
     setTranscript('')
   }
 
+  // 음성 지시 녹음 시작
+  const startRecordingInstruction = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      alert('브라우저가 오디오 녹음을 지원하지 않습니다.')
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      instructionStreamRef.current = stream
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
+        : 'audio/webm'
+
+      const recorder = new MediaRecorder(stream, { mimeType })
+      instructionRecorderRef.current = recorder
+      instructionChunksRef.current = []
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          instructionChunksRef.current.push(event.data)
+          console.log(`[음성지시] 청크 저장: ${event.data.size} bytes`)
+        }
+      }
+
+      recorder.onstop = async () => {
+        console.log('[음성지시] 완료, STT 처리 시작...')
+        const audioBlob = new Blob(instructionChunksRef.current, { type: mimeType })
+        console.log(`[음성지시] 총 크기: ${audioBlob.size} bytes`)
+
+        // STT 처리 후 instruction 필드에 추가
+        await processInstructionToText(audioBlob, mimeType)
+
+        // 리소스 정리
+        if (instructionStreamRef.current) {
+          instructionStreamRef.current.getTracks().forEach(track => track.stop())
+          instructionStreamRef.current = null
+        }
+        instructionChunksRef.current = []
+      }
+
+      recorder.start()
+      setIsRecordingInstruction(true)
+      console.log(`[음성지시] 녹음 시작: ${mimeType}`)
+    } catch (err) {
+      console.error('[음성지시] 시작 실패:', err)
+      alert('마이크 권한을 허용해 주세요.')
+    }
+  }
+
+  // 음성 지시 녹음 정지
+  const stopRecordingInstruction = () => {
+    console.log('[음성지시] 정지 요청')
+
+    if (instructionRecorderRef.current && instructionRecorderRef.current.state !== 'inactive') {
+      try {
+        instructionRecorderRef.current.stop()
+      } catch (err) {
+        console.error('[음성지시] 정지 실패:', err)
+      }
+    }
+
+    setIsRecordingInstruction(false)
+  }
+
+  // 음성 지시 → 텍스트 변환 후 instruction 필드에 추가
+  const processInstructionToText = async (audioBlob: Blob, mimeType: string) => {
+    setIsProcessingInstruction(true)
+    try {
+      const reader = new FileReader()
+      reader.onloadend = async () => {
+        const base64 = (reader.result as string).split(',')[1]
+        console.log(`[음성지시 STT] 전송 시작: ${base64?.length || 0} chars`)
+
+        try {
+          const resp = await fetch(`${API_BASE}/api/stt/recognize-chunk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audioData: base64, mimeType }),
+          })
+          const data = await resp.json()
+
+          console.log('[음성지시 STT] 응답:', data)
+
+          if (data.text) {
+            // instruction 필드에 추가 (기존 내용 유지)
+            setInstruction(prev => prev ? prev + ' ' + data.text : data.text)
+            console.log(`[음성지시 STT] 성공: ${data.text.length} chars`)
+          } else {
+            alert('음성이 인식되지 않았습니다. 다시 시도해 주세요.')
+          }
+        } catch (err) {
+          console.error('[음성지시 STT] 전송 실패:', err)
+          alert('음성 변환 중 오류가 발생했습니다.')
+        } finally {
+          setIsProcessingInstruction(false)
+        }
+      }
+      reader.readAsDataURL(audioBlob)
+    } catch (err) {
+      console.error('[음성지시 STT] 처리 실패:', err)
+      setIsProcessingInstruction(false)
+    }
+  }
+
   const composeWithGemini = async () => {
     if (geminiEnabled === false) {
       alert('서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정 필요).')
@@ -373,12 +490,44 @@ function App() {
             {geminiEnabled === false && (<><AlertCircle size={14} /> 서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정).</>)}
             {geminiEnabled === true && (<><CheckCircle2 size={14} /> Gemini 설정이 감지되었습니다. 문서 작성이 가능합니다.</>)}
           </p>
-          <textarea
-            value={instruction}
-            onChange={(e) => setInstruction(e.target.value)}
-            placeholder="수정 요청/추가 지침을 입력하세요 (예: 300자 이내 요약, 공손한 어조로 재작성 등)"
-            className="textarea-sm mt-8"
-          />
+          <div style={{ position: 'relative' }}>
+            <textarea
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              placeholder="수정 요청/추가 지침을 입력하세요 (예: 300자 이내 요약, 공손한 어조로 재작성 등) 또는 🎤 음성으로 지시하세요"
+              className="textarea-sm mt-8"
+              disabled={isProcessingInstruction}
+              style={{ paddingRight: 60 }}
+            />
+            <button
+              aria-label="음성으로 지시"
+              title={isRecordingInstruction ? '음성 지시 정지' : '음성으로 지시'}
+              onClick={() => (isRecordingInstruction ? stopRecordingInstruction() : startRecordingInstruction())}
+              className={`icon-btn ${isRecordingInstruction ? 'recording' : ''}`}
+              disabled={isProcessingInstruction}
+              style={{
+                position: 'absolute',
+                right: 8,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                width: 40,
+                height: 40,
+                minWidth: 40,
+              }}
+            >
+              {isRecordingInstruction ? <Square size={20} /> : <Mic size={20} />}
+            </button>
+          </div>
+          {isRecordingInstruction && (
+            <p className="help" style={{ marginTop: 4 }}>
+              <CheckCircle2 size={14} /> 음성 지시를 녹음 중입니다. 정지 버튼을 눌러 녹음을 종료하세요.
+            </p>
+          )}
+          {isProcessingInstruction && (
+            <p className="help" style={{ marginTop: 4 }}>
+              <Loader2 size={14} /> 음성을 텍스트로 변환 중입니다...
+            </p>
+          )}
           <textarea
             value={composedText}
             onChange={(e) => setComposedText(e.target.value)}
