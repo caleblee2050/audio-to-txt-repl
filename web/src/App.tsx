@@ -481,10 +481,11 @@ function App() {
 
         <section ref={recordRef} className="section" id="record">
           <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Mic size={18} /> 1) 음성 인식 (정지까지 연속 기록)
+            <Mic size={18} /> 1) 음성 녹음 및 내용 수정
           </h2>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* 녹음 컨트롤 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <button
                 aria-label="녹음 토글"
@@ -510,27 +511,12 @@ function App() {
             )}
             {!isRecording && !isProcessing && (
               <p className="help" style={{ margin: 0 }}>
-                <Mic size={16} /> 녹음 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 종료 후 자동으로 텍스트로 변환됩니다.
+                <Mic size={16} /> 녹음 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 종료 후 자동으로 아래에 텍스트로 변환됩니다.
               </p>
             )}
           </div>
 
-          <textarea
-            value={transcript}
-            onChange={(e) => setTranscript(e.target.value)}
-            placeholder="녹음 후 정지하면 여기에 음성 인식 결과가 표시됩니다."
-            className="textarea-md"
-            disabled={isProcessing}
-            style={{ marginTop: 16 }}
-          />
-        </section>
-
-        <section ref={composeRef} className="section" id="compose">
-          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Brain size={18} /> 2) 내용 확인 및 수정
-          </h2>
-
-          {/* 녹음 내용 편집창 (통합) */}
+          {/* 통합 편집창: 녹음 내용 + 직접 수정 */}
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 15 }}>
               녹음 내용 (직접 수정 가능)
@@ -538,8 +524,9 @@ function App() {
             <textarea
               value={transcript}
               onChange={(e) => setTranscript(e.target.value)}
-              placeholder="1단계에서 녹음한 내용이 여기에 표시됩니다. 직접 수정하거나 AI에게 수정 지시할 수 있습니다."
+              placeholder="녹음한 내용이 여기에 표시됩니다. 직접 수정하거나 아래 AI 수정 기능을 사용하세요."
               className="textarea-lg"
+              disabled={isProcessing}
               style={{
                 fontSize: 16,
                 lineHeight: 1.6,
@@ -613,11 +600,11 @@ function App() {
             </div>
           )}
 
-          <hr style={{ margin: '32px 0', border: 'none', borderTop: '2px solid #e0e0e0' }} />
+        </section>
 
-          {/* 최종 문서 작성 */}
-          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 24 }}>
-            <Brain size={18} /> 3) 최종 문서 작성
+        <section ref={composeRef} className="section" id="compose">
+          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Brain size={18} /> 2) 최종 문서 작성
           </h2>
           <p className="help" style={{ marginBottom: 16, fontSize: 14 }}>
             {geminiEnabled === null && (<><AlertCircle size={16} /> 서버 연결 상태를 확인 중입니다.</>)}
