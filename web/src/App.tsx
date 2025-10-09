@@ -30,6 +30,12 @@ function App() {
   const [isProcessingInstruction, setIsProcessingInstruction] = useState(false)
   const [isEditingTranscript, setIsEditingTranscript] = useState(false) // 내용 수정 중
 
+  // 녹음 시간 및 오디오 정보
+  const [recordingDuration, setRecordingDuration] = useState(0)
+  const [lastAudioSize, setLastAudioSize] = useState(0)
+  const recordingStartTimeRef = useRef<number>(0)
+  const recordingTimerRef = useRef<number | null>(null)
+
   const recordRef = useRef<HTMLDivElement | null>(null)
   const composeRef = useRef<HTMLDivElement | null>(null)
   const savedRef = useRef<HTMLDivElement | null>(null)
@@ -142,6 +148,14 @@ function App() {
       mediaRecorderRef.current = recorder
       audioChunksRef.current = []
 
+      // 녹음 시간 타이머 시작
+      recordingStartTimeRef.current = Date.now()
+      setRecordingDuration(0)
+      recordingTimerRef.current = window.setInterval(() => {
+        const elapsed = Math.floor((Date.now() - recordingStartTimeRef.current) / 1000)
+        setRecordingDuration(elapsed)
+      }, 1000)
+
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data)
@@ -150,9 +164,17 @@ function App() {
       }
 
       recorder.onstop = async () => {
+        // 타이머 정지
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current)
+          recordingTimerRef.current = null
+        }
+
         console.log('[녹음] 완료, STT 처리 시작...')
         const audioBlob = new Blob(audioChunksRef.current, { type: mimeType })
-        console.log(`[녹음] 총 크기: ${audioBlob.size} bytes, ${mimeType}`)
+        const audioSizeMB = (audioBlob.size / 1024 / 1024).toFixed(2)
+        setLastAudioSize(audioBlob.size)
+        console.log(`[녹음] 총 크기: ${audioBlob.size} bytes (${audioSizeMB} MB), ${mimeType}`)
 
         // STT 처리
         await processAudioToText(audioBlob, mimeType)
@@ -486,6 +508,7 @@ function App() {
           <div className="brand" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Mic size={18} />
             Audio → Text Composer
+            <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 4 }}>v1.2.0</span>
           </div>
           <span className="subtitle">스마트폰 최적화 · 실시간 음성 정리</span>
           <span className="grow" />
@@ -526,8 +549,8 @@ function App() {
             </div>
 
             {isRecording && (
-              <p className="help" style={{ margin: 0 }}>
-                <CheckCircle2 size={16} /> 녹음 중입니다. 정지 버튼을 눌러 녹음을 종료하세요.
+              <p className="help" style={{ margin: 0, fontSize: 15, fontWeight: 600, color: '#d32f2f' }}>
+                <CheckCircle2 size={16} /> 녹음 중: {Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, '0')}
               </p>
             )}
             {isProcessing && (
@@ -544,9 +567,29 @@ function App() {
 
           {/* 통합 편집창: 녹음 내용 + 직접 수정 */}
           <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 15 }}>
-              녹음 내용 (직접 수정 가능)
-            </label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+              <label style={{ fontWeight: 600, fontSize: 15, margin: 0 }}>
+                녹음 내용 (직접 수정 가능)
+              </label>
+              <div style={{ fontSize: 13, color: '#666', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {transcript && (
+                  <span>
+                    📝 {transcript.length}자
+                    {transcript.length >= 2000 && ' (2000자 이상)'}
+                    {transcript.length >= 1000 && transcript.length < 2000 && ' (1000자 이상)'}
+                    {transcript.length >= 500 && transcript.length < 1000 && ' (500자 이상)'}
+                    {transcript.length >= 300 && transcript.length < 500 && ' (300자 이상)'}
+                  </span>
+                )}
+                {lastAudioSize > 0 && (
+                  <span>
+                    🎤 {lastAudioSize >= 1024 * 1024
+                      ? `${(lastAudioSize / 1024 / 1024).toFixed(2)} MB`
+                      : `${(lastAudioSize / 1024).toFixed(1)} KB`}
+                  </span>
+                )}
+              </div>
+            </div>
             <textarea
               value={transcript}
               onChange={(e) => setTranscript(e.target.value)}

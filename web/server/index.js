@@ -42,9 +42,10 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
     }
 
     // 오디오 길이 추정 (대략적)
-    // WEBM_OPUS: ~12KB/sec, 1분 = ~720KB
-    const estimatedDurationSec = encoding === 'WEBM_OPUS' ? audioSizeBytes / 12000 : audioSizeBytes / 32000;
-    console.log(`[STT] 예상 길이: ${estimatedDurationSec.toFixed(1)}초`);
+    // WEBM_OPUS: 비트레이트가 다양함 (6-20KB/sec), 보수적으로 추정
+    // 평균 ~8KB/sec로 가정 (낮은 비트레이트)
+    const estimatedDurationSec = encoding === 'WEBM_OPUS' ? audioSizeBytes / 8000 : audioSizeBytes / 32000;
+    console.log(`[STT] 예상 길이: ${estimatedDurationSec.toFixed(1)}초 (파일 크기 ${audioSizeMB} MB)`);
 
     const config = {
       encoding,
