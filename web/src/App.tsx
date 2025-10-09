@@ -773,8 +773,10 @@ function App() {
             className="textarea-lg"
             style={{
               fontSize: 16,
-              lineHeight: 1.6,
-              color: '#000'
+              lineHeight: 1.7,
+              color: '#000',
+              backgroundColor: '#fff',
+              fontWeight: 500
             }}
           />
           <div className="controls mt-8">
