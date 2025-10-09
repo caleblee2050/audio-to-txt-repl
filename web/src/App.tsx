@@ -45,7 +45,6 @@ function App() {
   // 메인 녹음용 MediaRecorder
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
 
   // 음성 지시용 MediaRecorder
   const instructionRecorderRef = useRef<MediaRecorder | null>(null)
