@@ -56,17 +56,17 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
       config: {
         encoding,
         languageCode: 'ko-KR',
-        model: 'long',  // long 모델 사용 (최대 5시간 지원)
+        model: 'latest_long',  // latest_long 모델 사용
         audioChannelCount: 1,
         enableAutomaticPunctuation: true,
-        useEnhanced: true,
+        // useEnhanced: true는 long 모델과 호환되지 않음
         // 긴 오디오를 위한 추가 설정
         enableWordTimeOffsets: false,
         enableWordConfidence: false,
       },
     };
 
-    console.log(`[STT] Google STT 요청: encoding=${encoding}, model=long, size=${audioSizeMB} MB`);
+    console.log(`[STT] Google STT 요청: encoding=${encoding}, model=latest_long, size=${audioSizeMB} MB`);
     const [response] = await speechClient.recognize(request);
 
     const transcription = response.results
