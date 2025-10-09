@@ -194,10 +194,13 @@ function App() {
   const processAudioToText = async (audioBlob: Blob, mimeType: string) => {
     setIsProcessing(true)
     try {
+      const audioSizeMB = (audioBlob.size / 1024 / 1024).toFixed(2)
+      console.log(`[STT] 오디오 크기: ${audioSizeMB} MB`)
+
       const reader = new FileReader()
       reader.onloadend = async () => {
         const base64 = (reader.result as string).split(',')[1]
-        console.log(`[STT] 전송 시작: ${base64?.length || 0} chars`)
+        console.log(`[STT] 전송 시작: ${base64?.length || 0} chars (${audioSizeMB} MB)`)
 
         try {
           const resp = await fetch(`${API_BASE}/api/stt/recognize-chunk`, {
@@ -209,15 +212,27 @@ function App() {
 
           console.log('[STT] 응답:', data)
 
+          if (!resp.ok) {
+            // 서버 에러 처리
+            console.error('[STT] 서버 에러:', data)
+            if (resp.status === 413) {
+              alert(data.details || '오디오 파일이 너무 큽니다. 1분 이내로 녹음해 주세요.')
+            } else {
+              alert(data.details || '음성 변환 중 오류가 발생했습니다.')
+            }
+            return
+          }
+
           if (data.text) {
             setTranscript(prev => prev ? prev + '\n' + data.text : data.text)
             console.log(`[STT] 성공: ${data.text.length} chars`)
           } else {
-            alert('음성이 인식되지 않았습니다. 다시 시도해 주세요.')
+            console.warn('[STT] 빈 응답 (오디오 크기:', audioSizeMB, 'MB)')
+            alert('음성이 인식되지 않았습니다. 명확하게 말씀해 주시거나, 녹음 시간을 줄여 주세요.')
           }
         } catch (err) {
           console.error('[STT] 전송 실패:', err)
-          alert('음성 변환 중 오류가 발생했습니다.')
+          alert('음성 변환 중 네트워크 오류가 발생했습니다.')
         } finally {
           setIsProcessing(false)
         }
@@ -226,6 +241,7 @@ function App() {
     } catch (err) {
       console.error('[STT] 처리 실패:', err)
       setIsProcessing(false)
+      alert('음성 처리 중 오류가 발생했습니다.')
     }
   }
 
@@ -321,16 +337,22 @@ function App() {
 
           console.log('[음성지시 STT] 응답:', data)
 
+          if (!resp.ok) {
+            console.error('[음성지시 STT] 서버 에러:', data)
+            alert(data.details || '음성 변환 중 오류가 발생했습니다.')
+            return
+          }
+
           if (data.text) {
             // instruction 필드에 추가 (기존 내용 유지)
             setInstruction(prev => prev ? prev + ' ' + data.text : data.text)
             console.log(`[음성지시 STT] 성공: ${data.text.length} chars`)
           } else {
-            alert('음성이 인식되지 않았습니다. 다시 시도해 주세요.')
+            alert('음성이 인식되지 않았습니다. 명확하게 말씀해 주세요.')
           }
         } catch (err) {
           console.error('[음성지시 STT] 전송 실패:', err)
-          alert('음성 변환 중 오류가 발생했습니다.')
+          alert('음성 변환 중 네트워크 오류가 발생했습니다.')
         } finally {
           setIsProcessingInstruction(false)
         }
@@ -339,6 +361,7 @@ function App() {
     } catch (err) {
       console.error('[음성지시 STT] 처리 실패:', err)
       setIsProcessingInstruction(false)
+      alert('음성 처리 중 오류가 발생했습니다.')
     }
   }
 

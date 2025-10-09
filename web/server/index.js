@@ -31,7 +31,17 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
 
     // Base64 디코딩
     const audioBytes = Buffer.from(audioData, 'base64');
-    console.log(`[STT] 청크 수신: ${audioBytes.length} bytes, ${mimeType}`);
+    const audioSizeMB = (audioBytes.length / 1024 / 1024).toFixed(2);
+    console.log(`[STT] 청크 수신: ${audioBytes.length} bytes (${audioSizeMB} MB), ${mimeType}`);
+
+    // Google Cloud STT 제한: recognize API는 1분 이하, 10MB 이하만 지원
+    if (audioBytes.length > 10 * 1024 * 1024) {
+      console.error(`[STT] 오디오 크기 초과: ${audioSizeMB} MB > 10 MB`);
+      return res.status(413).json({
+        error: 'Audio too large',
+        details: `오디오 파일이 너무 큽니다 (${audioSizeMB} MB). 1분 이내로 녹음해 주세요.`
+      });
+    }
 
     // 포맷 감지
     let encoding = 'WEBM_OPUS';
@@ -40,21 +50,23 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
       encoding = 'LINEAR16';
     }
 
-    // 샘플레이트 자동 감지를 위해 제거 (Google STT가 자동으로 감지)
+    // 긴 오디오를 위한 설정 개선
     const request = {
       audio: { content: audioBytes },
       config: {
         encoding,
-        // sampleRateHertz 제거 - 자동 감지
         languageCode: 'ko-KR',
-        model: 'default',  // latest_long → default (더 안정적)
+        model: 'long',  // long 모델 사용 (최대 5시간 지원)
         audioChannelCount: 1,
         enableAutomaticPunctuation: true,
         useEnhanced: true,
+        // 긴 오디오를 위한 추가 설정
+        enableWordTimeOffsets: false,
+        enableWordConfidence: false,
       },
     };
 
-    console.log(`[STT] Google STT 요청: encoding=${encoding}, auto sample rate`);
+    console.log(`[STT] Google STT 요청: encoding=${encoding}, model=long, size=${audioSizeMB} MB`);
     const [response] = await speechClient.recognize(request);
 
     const transcription = response.results
@@ -62,11 +74,23 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
       .join('\n')
       .trim();
 
-    console.log(`[STT] 결과: "${transcription}" (${transcription.length} chars)`);
+    if (!transcription) {
+      console.warn(`[STT] 빈 결과 반환 (오디오 크기: ${audioSizeMB} MB)`);
+    } else {
+      console.log(`[STT] 결과: "${transcription.substring(0, 100)}..." (${transcription.length} chars)`);
+    }
+
     res.json({ text: transcription || '' });
   } catch (err) {
     console.error('[STT] 오류:', err);
-    res.status(500).json({ error: 'STT failed', details: String(err?.message || err) });
+    const errorMsg = err?.message || String(err);
+    console.error('[STT] 상세 오류:', errorMsg);
+    res.status(500).json({
+      error: 'STT failed',
+      details: errorMsg.includes('exceeds')
+        ? '오디오가 너무 깁니다. 1분 이내로 녹음해 주세요.'
+        : errorMsg
+    });
   }
 });
 
