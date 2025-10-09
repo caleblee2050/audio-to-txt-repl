@@ -35,6 +35,7 @@ function App() {
   const [lastAudioSize, setLastAudioSize] = useState(0)
   const recordingStartTimeRef = useRef<number>(0)
   const recordingTimerRef = useRef<number | null>(null)
+  const chunkIntervalRef = useRef<number | null>(null) // 1분마다 청크 전송용
 
   const recordRef = useRef<HTMLDivElement | null>(null)
   const composeRef = useRef<HTMLDivElement | null>(null)
@@ -156,28 +157,61 @@ function App() {
         setRecordingDuration(elapsed)
       }, 1000)
 
-      recorder.ondataavailable = (event) => {
+      recorder.ondataavailable = async (event) => {
         if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data)
-          console.log(`[녹음] 청크 저장: ${event.data.size} bytes (총 ${audioChunksRef.current.length}개)`)
+          console.log(`[녹음] 청크 수신: ${event.data.size} bytes`)
+
+          // 각 30초 청크를 독립적으로 즉시 처리 (누적하지 않음)
+          const chunkBlob = event.data
+          const chunkSizeKB = chunkBlob.size / 1024
+          const chunkSizeMB = (chunkBlob.size / 1024 / 1024).toFixed(2)
+
+          // 무음 구간 감지: 30초 녹음이 5KB 미만이면 거의 무음으로 간주하고 건너뜀
+          if (chunkSizeKB < 5) {
+            console.log(`[청크 STT] 무음 감지로 건너뜀: ${chunkSizeMB} MB (${chunkSizeKB.toFixed(1)} KB)`)
+            return
+          }
+
+          console.log(`[청크 STT] 처리 시작: ${chunkSizeMB} MB (${chunkSizeKB.toFixed(1)} KB)`)
+
+          // 녹음 중에는 즉시 STT 처리 (백그라운드, 녹음 방해 안 함)
+          if (recorder.state === 'recording') {
+            processAudioToText(chunkBlob, mimeType, 30, true).catch(err => {
+              console.error('[청크 STT] 처리 실패:', err)
+            })
+          } else {
+            // 녹음 종료 시점의 마지막 청크는 onstop에서 처리
+            audioChunksRef.current.push(event.data)
+          }
         }
       }
 
       recorder.onstop = async () => {
+        // 청크 인터벌 정지
+        if (chunkIntervalRef.current) {
+          clearInterval(chunkIntervalRef.current)
+          chunkIntervalRef.current = null
+        }
+
         // 타이머 정지
         if (recordingTimerRef.current) {
           clearInterval(recordingTimerRef.current)
           recordingTimerRef.current = null
         }
 
-        console.log('[녹음] 완료, STT 처리 시작...')
-        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType })
-        const audioSizeMB = (audioBlob.size / 1024 / 1024).toFixed(2)
-        setLastAudioSize(audioBlob.size)
-        console.log(`[녹음] 총 크기: ${audioBlob.size} bytes (${audioSizeMB} MB), ${mimeType}`)
+        console.log('[녹음] 완료, 마지막 청크 STT 처리...')
 
-        // STT 처리
-        await processAudioToText(audioBlob, mimeType)
+        // 마지막 남은 청크 처리
+        if (audioChunksRef.current.length > 0) {
+          const finalChunk = new Blob(audioChunksRef.current, { type: mimeType })
+          const finalSizeMB = (finalChunk.size / 1024 / 1024).toFixed(2)
+          const finalDuration = Math.floor((Date.now() - recordingStartTimeRef.current) / 1000) % 30 || 30
+          console.log(`[마지막 청크] 크기: ${finalSizeMB} MB, ${finalDuration}초`)
+
+          setLastAudioSize(finalChunk.size)
+          // 마지막 청크도 자동 청크처럼 처리 (빈 결과 시 alert 안 띄움)
+          await processAudioToText(finalChunk, mimeType, finalDuration, true)
+        }
 
         // 리소스 정리
         if (mediaStreamRef.current) {
@@ -187,11 +221,11 @@ function App() {
         audioChunksRef.current = []
       }
 
-      // 녹음 시작 (timeslice 없이 계속 녹음)
-      recorder.start()
+      // 녹음 시작 (30초마다 ondataavailable 호출)
+      recorder.start(30000) // 30초 (파일 크기 제한 안전 마진)
       setIsRecording(true)
       acquireWakeLock()
-      console.log(`[녹음] 시작: ${mimeType}`)
+      console.log(`[녹음] 시작: ${mimeType}, 30초마다 자동 STT 처리`)
     } catch (err) {
       console.error('[녹음] 시작 실패:', err)
       alert('마이크 권한을 허용해 주세요.')
@@ -213,25 +247,24 @@ function App() {
     awaitWakeRelease()
   }
 
-  const processAudioToText = async (audioBlob: Blob, mimeType: string) => {
-    setIsProcessing(true)
+  const processAudioToText = async (audioBlob: Blob, mimeType: string, durationSeconds: number, isAutoChunk = false) => {
+    if (!isAutoChunk) {
+      setIsProcessing(true)
+    }
     try {
       const audioSizeMB = (audioBlob.size / 1024 / 1024).toFixed(2)
-      const audioSizeKB = audioBlob.size / 1024
-      // 대략적인 길이 추정 (WEBM_OPUS: ~12KB/sec)
-      const estimatedDurationSec = audioSizeKB / 12
-      console.log(`[STT] 오디오 크기: ${audioSizeMB} MB, 예상 길이: ${estimatedDurationSec.toFixed(1)}초`)
+      console.log(`[STT] 오디오 크기: ${audioSizeMB} MB, 실제 길이: ${durationSeconds}초`)
 
       const reader = new FileReader()
       reader.onloadend = async () => {
         const base64 = (reader.result as string).split(',')[1]
-        console.log(`[STT] 전송 시작: ${base64?.length || 0} chars (${audioSizeMB} MB, 약 ${estimatedDurationSec.toFixed(1)}초)`)
+        console.log(`[STT] 전송 시작: ${base64?.length || 0} chars (${audioSizeMB} MB, ${durationSeconds}초)`)
 
         try {
           const resp = await fetch(`${API_BASE}/api/stt/recognize-chunk`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ audioData: base64, mimeType }),
+            body: JSON.stringify({ audioData: base64, mimeType, durationSeconds }),
           })
           const data = await resp.json()
 
@@ -240,10 +273,12 @@ function App() {
           if (!resp.ok) {
             // 서버 에러 처리
             console.error('[STT] 서버 에러:', data)
-            if (resp.status === 413) {
-              alert(data.details || '오디오 파일이 너무 큽니다. 10분 이내로 녹음해 주세요.')
-            } else {
-              alert(data.details || '음성 변환 중 오류가 발생했습니다.')
+            if (!isAutoChunk) {
+              if (resp.status === 413) {
+                alert(data.details || '오디오 파일이 너무 큽니다. 10분 이내로 녹음해 주세요.')
+              } else {
+                alert(data.details || '음성 변환 중 오류가 발생했습니다.')
+              }
             }
             return
           }
@@ -252,14 +287,21 @@ function App() {
             setTranscript(prev => prev ? prev + '\n' + data.text : data.text)
             console.log(`[STT] 성공: ${data.text.length} chars`)
           } else {
-            console.warn('[STT] 빈 응답 (오디오 크기:', audioSizeMB, 'MB, 예상', estimatedDurationSec.toFixed(1), '초)')
-            alert('음성이 인식되지 않았습니다. 명확하게 말씀해 주시거나, 녹음 시간을 줄여 주세요.')
+            console.warn('[STT] 빈 응답 (오디오 크기:', audioSizeMB, 'MB,', durationSeconds, '초)')
+            // 자동 청크 처리일 때는 alert 안 띄움 (녹음 중 방해하지 않음)
+            if (!isAutoChunk) {
+              alert('음성이 인식되지 않았습니다. 명확하게 말씀해 주시거나, 녹음 시간을 줄여 주세요.')
+            }
           }
         } catch (err) {
           console.error('[STT] 전송 실패:', err)
-          alert('음성 변환 중 네트워크 오류가 발생했습니다.')
+          if (!isAutoChunk) {
+            alert('음성 변환 중 네트워크 오류가 발생했습니다.')
+          }
         } finally {
-          setIsProcessing(false)
+          if (!isAutoChunk) {
+            setIsProcessing(false)
+          }
         }
       }
       reader.readAsDataURL(audioBlob)
@@ -508,7 +550,7 @@ function App() {
           <div className="brand" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Mic size={18} />
             Audio → Text Composer
-            <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 4 }}>v1.2.0</span>
+            <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 4 }}>v1.4.1</span>
           </div>
           <span className="subtitle">스마트폰 최적화 · 실시간 음성 정리</span>
           <span className="grow" />

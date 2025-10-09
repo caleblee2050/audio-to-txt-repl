@@ -20,11 +20,11 @@ app.get('/api/health', (_req, res) => {
 });
 
 // MediaRecorder 오디오 청크를 받아서 Google Cloud STT로 변환
-// 요청: { audioData: base64, mimeType: 'audio/webm;codecs=opus' }
+// 요청: { audioData: base64, mimeType: 'audio/webm;codecs=opus', durationSeconds: number }
 // 응답: { text: string }
 app.post('/api/stt/recognize-chunk', async (req, res) => {
   try {
-    const { audioData, mimeType } = req.body;
+    const { audioData, mimeType, durationSeconds } = req.body;
     if (!audioData) {
       return res.status(400).json({ error: 'Missing audioData' });
     }
@@ -33,7 +33,7 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
     const audioBytes = Buffer.from(audioData, 'base64');
     const audioSizeMB = (audioBytes.length / 1024 / 1024).toFixed(2);
     const audioSizeBytes = audioBytes.length;
-    console.log(`[STT] 청크 수신: ${audioSizeBytes} bytes (${audioSizeMB} MB), ${mimeType}`);
+    console.log(`[STT] 청크 수신: ${audioSizeBytes} bytes (${audioSizeMB} MB), ${mimeType}, ${durationSeconds}초`);
 
     // 포맷 감지
     let encoding = 'WEBM_OPUS';
@@ -41,73 +41,51 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
       encoding = 'LINEAR16';
     }
 
-    // 오디오 길이 추정 (대략적)
-    // WEBM_OPUS: 비트레이트가 다양함 (6-20KB/sec), 보수적으로 추정
-    // 평균 ~8KB/sec로 가정 (낮은 비트레이트)
-    const estimatedDurationSec = encoding === 'WEBM_OPUS' ? audioSizeBytes / 8000 : audioSizeBytes / 32000;
-    console.log(`[STT] 예상 길이: ${estimatedDurationSec.toFixed(1)}초 (파일 크기 ${audioSizeMB} MB)`);
+    // 실제 녹음 시간 사용 (클라이언트에서 전송)
+    const actualDurationSec = durationSeconds || 0;
+    console.log(`[STT] 실제 길이: ${actualDurationSec}초 (파일 크기 ${audioSizeMB} MB)`);
 
     const config = {
       encoding,
+      sampleRateHertz: encoding === 'WEBM_OPUS' ? 48000 : 16000,
       languageCode: 'ko-KR',
       audioChannelCount: 1,
       enableAutomaticPunctuation: true,
       enableWordTimeOffsets: false,
       enableWordConfidence: false,
+      // 모바일 환경 음성 인식 향상
+      useEnhanced: false, // 표준 모델 사용 (비용 절감)
+      model: 'default',
     };
 
     let transcription = '';
 
-    // 1분 이하: recognize API (빠름)
-    if (estimatedDurationSec <= 60) {
-      console.log(`[STT] recognize API 사용 (짧은 오디오)`);
-      const request = {
-        audio: { content: audioBytes },
-        config: {
-          ...config,
-          model: 'default',  // 짧은 오디오는 default 모델
-        },
-      };
-
-      const [response] = await speechClient.recognize(request);
-      transcription = response.results
-        ?.map(result => result.alternatives?.[0]?.transcript || '')
-        .join('\n')
-        .trim();
-    } else {
-      // 1분 초과: longRunningRecognize API (느리지만 긴 오디오 지원)
-      console.log(`[STT] longRunningRecognize API 사용 (긴 오디오)`);
-
-      // 최대 10분 제한 (비용 및 처리 시간 고려)
-      if (estimatedDurationSec > 600) {
-        return res.status(413).json({
-          error: 'Audio too long',
-          details: `오디오가 너무 깁니다 (약 ${(estimatedDurationSec / 60).toFixed(1)}분). 10분 이내로 녹음해 주세요.`
-        });
-      }
-
-      const request = {
-        audio: { content: audioBytes },
-        config: {
-          ...config,
-          model: 'latest_long',  // 긴 오디오는 latest_long 모델
-        },
-      };
-
-      const [operation] = await speechClient.longRunningRecognize(request);
-      console.log(`[STT] 장기 작업 시작... (예상 ${estimatedDurationSec.toFixed(1)}초 오디오)`);
-
-      // 작업 완료 대기 (최대 5분)
-      const [response] = await operation.promise();
-
-      transcription = response.results
-        ?.map(result => result.alternatives?.[0]?.transcript || '')
-        .join('\n')
-        .trim();
+    // 최대 10분 제한 (비용 및 처리 시간 고려)
+    if (actualDurationSec > 600) {
+      return res.status(413).json({
+        error: 'Audio too long',
+        details: `오디오가 너무 깁니다 (${(actualDurationSec / 60).toFixed(1)}분). 10분 이내로 녹음해 주세요.`
+      });
     }
 
+    // recognize API 사용 (모든 청크가 충분히 작아야 함)
+    console.log(`[STT] recognize API 사용 (${actualDurationSec}초, ${audioSizeMB} MB)`);
+    const request = {
+      audio: { content: audioBytes },
+      config: {
+        ...config,
+        model: 'default',
+      },
+    };
+
+    const [response] = await speechClient.recognize(request);
+    transcription = response.results
+      ?.map(result => result.alternatives?.[0]?.transcript || '')
+      .join('\n')
+      .trim();
+
     if (!transcription) {
-      console.warn(`[STT] 빈 결과 반환 (오디오 크기: ${audioSizeMB} MB, 예상 ${estimatedDurationSec.toFixed(1)}초)`);
+      console.warn(`[STT] 빈 결과 반환 (오디오 크기: ${audioSizeMB} MB, ${actualDurationSec}초)`);
     } else {
       console.log(`[STT] 결과: "${transcription.substring(0, 100)}..." (${transcription.length} chars)`);
     }
@@ -211,10 +189,27 @@ try {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
   const distPath = path.join(__dirname, '../dist');
-  app.use(express.static(distPath));
+
+  // Static files with cache control
+  app.use(express.static(distPath, {
+    setHeaders: (res, path) => {
+      // HTML files: no cache (always get latest)
+      if (path.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
+      // JS/CSS files: cache with version hash (vite handles this)
+      else if (path.endsWith('.js') || path.endsWith('.css')) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    }
+  }));
+
   // SPA fallback to index.html
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api/')) return next();
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.sendFile(path.join(distPath, 'index.html'));
   });
 } catch (e) {
