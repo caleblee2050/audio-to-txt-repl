@@ -15,7 +15,6 @@ type SavedDoc = { id: string; title: string; content: string; createdAt: number;
 
 function App() {
   const [isRecording, setIsRecording] = useState(false)
-  const isRecordingRef = useRef(false)
   const [transcript, setTranscript] = useState('')
   const [formatId, setFormatId] = useState<FormatId>('summary')
   const [composedText, setComposedText] = useState('')
@@ -24,37 +23,19 @@ function App() {
   const [instruction, setInstruction] = useState('')
   const [activeTab, setActiveTab] = useState<'record' | 'compose' | 'saved'>('record')
   const [isComposing, setIsComposing] = useState(false)
-  const recognitionRef = useRef<any>(null)
+  const [isProcessing, setIsProcessing] = useState(false)
+
   const recordRef = useRef<HTMLDivElement | null>(null)
   const composeRef = useRef<HTMLDivElement | null>(null)
   const savedRef = useRef<HTMLDivElement | null>(null)
   const wakeLockRef = useRef<any>(null)
-  // 음성 인식 재시작 루프를 방지하기 위한 재시도 정보
-  const restartInfoRef = useRef<{ count: number; last: number }>({ count: 0, last: 0 })
-  // 중복 재시작 예약을 방지하기 위한 타이머 핸들
-  const restartTimeoutRef = useRef<number | null>(null)
-  // 말이 멈춘 이후 자동 종료 임계시간(무음 지속 시간)
-  const SILENCE_RESTART_DELAY_MS = 20000 // 20초 (긴 무음 후 자동 종료)
-  const silenceTimeoutRef = useRef<number | null>(null)
-  const silenceWatcherRef = useRef<number | null>(null)
-  const lastSpeechTsRef = useRef<number>(Date.now())
-  // 마이크 스트림을 유지하고 에너지를 감지하여 무음 판단을 보완
-  const mediaStreamRef = useRef<MediaStream | null>(null)
-  const audioCtxRef = useRef<AudioContext | null>(null)
-  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
-  const gainNodeRef = useRef<GainNode | null>(null)
-  const energyWatcherRef = useRef<number | null>(null)
-  const recWatchRef = useRef<number | null>(null)
-  const ENERGY_CHECK_INTERVAL_MS = 400
-  const ENERGY_RMS_THRESHOLD = 0.008 // 말소리 존재 추정 임계값(모바일 마이크 감도 고려하여 낮춤)
-  const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
 
-  // 하이브리드 녹음: Android는 MediaRecorder, iOS는 Web Speech API
-  const [useMediaRecorder, setUseMediaRecorder] = useState(false)
+  // MediaRecorder 녹음 방식
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const CHUNK_INTERVAL_MS = 8000 // 8초마다 청크 전송 (STT 인식률 향상)
-  const [debugInfo, setDebugInfo] = useState<string>('')
+  const mediaStreamRef = useRef<MediaStream | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+
+  const API_BASE = (import.meta.env.VITE_API_BASE as string) || window.location.origin
 
   useEffect(() => {
     // 로컬 저장된 문서 불러오기
@@ -89,21 +70,6 @@ function App() {
     document.documentElement.dataset.theme = ''
   }, [])
 
-  // 플랫폼 감지: Android는 MediaRecorder, iOS는 Web Speech API
-  useEffect(() => {
-    const isAndroid = /Android/.test(navigator.userAgent)
-
-    // Android Chrome에서만 MediaRecorder 사용 (끊김 없음)
-    // iOS Safari는 Web Speech API 유지 (끊김 있지만 작동)
-    if (isAndroid && typeof MediaRecorder !== 'undefined') {
-      setUseMediaRecorder(true)
-      console.log('Android 감지: MediaRecorder 모드 활성화')
-    } else {
-      setUseMediaRecorder(false)
-      console.log('iOS 또는 기타 플랫폼: Web Speech API 모드')
-    }
-  }, [])
-
   const scrollTo = (ref: React.RefObject<HTMLDivElement | null>, tab: 'record' | 'compose' | 'saved') => {
     try {
       ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -111,119 +77,17 @@ function App() {
     } catch {}
   }
 
-  // AudioContext/MediaStream 시작: 마이크 경로를 유지하고 에너지(RMS)로 발화 감지
-  const startMicStream = async () => {
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) return
-      if (mediaStreamRef.current) {
-        try { await audioCtxRef.current?.resume?.() } catch {}
-        return
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { noiseSuppression: false, echoCancellation: false, autoGainControl: false },
-      })
-      mediaStreamRef.current = stream
-      const AC: any = (window as any).AudioContext || (window as any).webkitAudioContext
-      if (!AC) return
-      const ctx: AudioContext = new AC()
-      audioCtxRef.current = ctx
-      const src = ctx.createMediaStreamSource(stream)
-      sourceNodeRef.current = src
-      const analyser = ctx.createAnalyser()
-      analyser.fftSize = 2048
-      analyserRef.current = analyser
-      src.connect(analyser)
-      // 무출력(무음) 라우팅으로 오디오 경로 유지 (일부 iOS 장치에서 필요)
-      const gain = ctx.createGain()
-      gain.gain.value = 0
-      gainNodeRef.current = gain
-      src.connect(gain)
-      gain.connect(ctx.destination)
-
-      if (energyWatcherRef.current) {
-        clearInterval(energyWatcherRef.current)
-        energyWatcherRef.current = null
-      }
-      energyWatcherRef.current = window.setInterval(() => {
-        try {
-          const a = analyserRef.current
-          if (!a) return
-          const buf = new Float32Array(a.fftSize)
-          a.getFloatTimeDomainData(buf)
-          let sum = 0
-          for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i]
-          const rms = Math.sqrt(sum / buf.length)
-          if (rms > ENERGY_RMS_THRESHOLD) {
-            lastSpeechTsRef.current = Date.now()
-          }
-        } catch {}
-      }, ENERGY_CHECK_INTERVAL_MS)
-    } catch (e) {
-      console.warn('startMicStream failed:', e)
-    }
-  }
-
-  const stopMicStream = () => {
-    try {
-      if (energyWatcherRef.current) {
-        clearInterval(energyWatcherRef.current)
-        energyWatcherRef.current = null
-      }
-      try { gainNodeRef.current?.disconnect?.() } catch {}
-      try { sourceNodeRef.current?.disconnect?.() } catch {}
-      try { audioCtxRef.current?.close?.() } catch {}
-      audioCtxRef.current = null
-      analyserRef.current = null
-      gainNodeRef.current = null
-      sourceNodeRef.current = null
-      if (mediaStreamRef.current) {
-        try { mediaStreamRef.current.getTracks().forEach(t => t.stop()) } catch {}
-        mediaStreamRef.current = null
-      }
-    } catch (e) {
-      console.warn('stopMicStream failed:', e)
-    }
-  }
-
-  const startRecWatchdog = () => {
-    if (recWatchRef.current) {
-      clearInterval(recWatchRef.current)
-      recWatchRef.current = null
-    }
-    recWatchRef.current = window.setInterval(() => {
-      try {
-        if (!isRecordingRef.current) return
-        const rec = recognitionRef.current
-        // 인식 객체가 사라졌고, 무음 타임아웃에 도달하지 않았다면 복구 시도
-        const silenceFor = Date.now() - lastSpeechTsRef.current
-        if (!rec && silenceFor < SILENCE_RESTART_DELAY_MS) {
-          console.warn('Recognition missing; respawning...')
-          // 간단 복구: 플래그를 내렸다가 재시작 호출
-          isRecordingRef.current = false
-          setIsRecording(false)
-          startRecording()
-        }
-      } catch {}
-    }, 7000)
-  }
-
-  const stopRecWatchdog = () => {
-    if (recWatchRef.current) {
-      clearInterval(recWatchRef.current)
-      recWatchRef.current = null
-    }
-  }
-
-  // 컴포넌트 언마운트 시 녹음 강제 종료(잔여 이벤트로 재시작되는 문제 예방)
+  // 컴포넌트 언마운트 시 녹음 강제 종료
   useEffect(() => {
     return () => {
       try {
-        const rec = recognitionRef.current
-        if (rec) rec.stop()
-        recognitionRef.current = null
-        try { awaitWakeRelease() } catch {}
-        try { stopMicStream() } catch {}
-        try { stopRecWatchdog() } catch {}
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop()
+        }
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach(t => t.stop())
+        }
+        awaitWakeRelease()
       } catch {}
     }
   }, [])
@@ -246,389 +110,115 @@ function App() {
     wakeLockRef.current = null
   }
 
-  // 재시작 카운터 초기화
-  const resetRestartInfo = () => {
-    restartInfoRef.current.count = 0
-    restartInfoRef.current.last = Date.now()
-    // 재시작 예약이 남아있으면 즉시 해제
-    if (restartTimeoutRef.current) {
-      clearTimeout(restartTimeoutRef.current)
-      restartTimeoutRef.current = null
+  // 통합 녹음: 로컬에 전체 녹음 후 종료 시 STT 처리
+  const startRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      alert('브라우저가 오디오 녹음을 지원하지 않습니다.')
+      return
     }
-    // 침묵 타이머도 클리어
-    if (silenceTimeoutRef.current) {
-      clearTimeout(silenceTimeoutRef.current)
-      silenceTimeoutRef.current = null
-    }
-  }
 
-  const clearSilenceTimeout = () => {
-    if (silenceTimeoutRef.current) {
-      clearTimeout(silenceTimeoutRef.current)
-      silenceTimeoutRef.current = null
-    }
-  }
-
-  const startSilenceWatcher = () => {
-    // 주기적으로 마지막 발화 시점과 현재 시간을 비교하여 무음 20초 초과 시 자동 종료
-    if (silenceWatcherRef.current) {
-      clearInterval(silenceWatcherRef.current)
-      silenceWatcherRef.current = null
-    }
-    silenceWatcherRef.current = window.setInterval(() => {
-      if (!isRecordingRef.current) {
-        clearInterval(silenceWatcherRef.current!)
-        silenceWatcherRef.current = null
-        return
-      }
-      const silenceFor = Date.now() - lastSpeechTsRef.current
-      // 20초 무음 시 자동 종료 (모바일에서 긴 대기 시간 확보)
-      if (silenceFor >= 20000) {
-        console.log('20초 무음 감지, 녹음 종료')
-        stopRecording()
-      }
-    }, 1000)
-  }
-
-  useEffect(() => {
-    const onVis = () => {
-      if (document.visibilityState === 'visible' && isRecordingRef.current) {
-        acquireWakeLock()
-        try { audioCtxRef.current?.resume?.() } catch {}
-      }
-    }
-    document.addEventListener('visibilitychange', onVis)
-    return () => document.removeEventListener('visibilitychange', onVis)
-  }, [])
-
-  // MediaRecorder 방식: 끊김 없는 녹음 (Android)
-  const startMediaRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       mediaStreamRef.current = stream
 
-      // MIME 타입 감지 (Android: webm, iOS: mp4)
+      // MIME 타입 감지
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
-        : 'audio/mp4'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
+        : 'audio/webm'
 
       const recorder = new MediaRecorder(stream, { mimeType })
       mediaRecorderRef.current = recorder
+      audioChunksRef.current = []
 
-      recorder.ondataavailable = async (event) => {
+      recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          const timestamp = new Date().toLocaleTimeString()
-          setDebugInfo(`[${timestamp}] 청크: ${event.data.size} bytes`)
-          console.log(`[MediaRecorder] 청크 생성: ${event.data.size} bytes`)
-
-          // 즉시 서버로 전송하여 STT 처리
-          try {
-            const reader = new FileReader()
-            reader.onloadend = async () => {
-              const base64 = (reader.result as string).split(',')[1]
-              setDebugInfo(prev => `${prev}\n[${timestamp}] STT 전송 중...`)
-              console.log(`[STT] 전송 시작: ${base64?.length || 0} chars`)
-
-              try {
-                const resp = await fetch(`${API_BASE}/api/stt/recognize-chunk`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ audioData: base64, mimeType }),
-                })
-                const data = await resp.json()
-
-                console.log('[STT] 응답:', data)
-
-                if (data.text) {
-                  setDebugInfo(prev => `${prev}\n[${timestamp}] ✅ "${data.text}"`)
-                  // 함수형 업데이트로 최신 상태 참조
-                  setTranscript(prev => {
-                    const updated = prev ? prev + '\n' + data.text : data.text
-                    console.log(`[텍스트] 업데이트 완료 (총 ${updated.length} chars)`)
-                    return updated
-                  })
-                } else {
-                  setDebugInfo(prev => `${prev}\n[${timestamp}] ⚠️ 무음/인식실패`)
-                  console.warn('[STT] 결과 없음 (무음 또는 인식 실패)')
-                }
-              } catch (err) {
-                setDebugInfo(prev => `${prev}\n[${timestamp}] ❌ 오류: ${err}`)
-                console.error('[STT] 전송 실패:', err)
-              }
-            }
-            reader.readAsDataURL(event.data)
-          } catch (err) {
-            console.error('[FileReader] 실패:', err)
-          }
-        } else {
-          console.warn('[MediaRecorder] 빈 청크 수신')
+          audioChunksRef.current.push(event.data)
+          console.log(`[녹음] 청크 저장: ${event.data.size} bytes (총 ${audioChunksRef.current.length}개)`)
         }
       }
 
-      recorder.onerror = (event) => {
-        console.error('[MediaRecorder] 오류:', event)
+      recorder.onstop = async () => {
+        console.log('[녹음] 완료, STT 처리 시작...')
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType })
+        console.log(`[녹음] 총 크기: ${audioBlob.size} bytes, ${mimeType}`)
+
+        // STT 처리
+        await processAudioToText(audioBlob, mimeType)
+
+        // 리소스 정리
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach(track => track.stop())
+          mediaStreamRef.current = null
+        }
+        audioChunksRef.current = []
       }
 
-      recorder.onstop = () => {
-        console.log('[MediaRecorder] 정지됨')
-      }
-
-      // 5초마다 자동으로 ondataavailable 호출 (timeslice)
-      recorder.start(CHUNK_INTERVAL_MS)
-      console.log(`[MediaRecorder] 시작: ${mimeType}, ${CHUNK_INTERVAL_MS}ms 청크`)
-
+      // 녹음 시작 (timeslice 없이 계속 녹음)
+      recorder.start()
       setIsRecording(true)
-      isRecordingRef.current = true
       acquireWakeLock()
+      console.log(`[녹음] 시작: ${mimeType}`)
     } catch (err) {
-      console.error('[MediaRecorder] 시작 실패:', err)
+      console.error('[녹음] 시작 실패:', err)
       alert('마이크 권한을 허용해 주세요.')
     }
   }
 
-  const stopMediaRecording = () => {
-    console.log('[MediaRecorder] 정지 요청')
+  const stopRecording = () => {
+    console.log('[녹음] 정지 요청')
 
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
         mediaRecorderRef.current.stop()
       } catch (err) {
-        console.error('[MediaRecorder] 정지 실패:', err)
+        console.error('[녹음] 정지 실패:', err)
       }
-      mediaRecorderRef.current = null
-    }
-
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop())
-      mediaStreamRef.current = null
     }
 
     setIsRecording(false)
-    isRecordingRef.current = false
     awaitWakeRelease()
   }
 
-  const startRecording = async () => {
-    // Android: MediaRecorder 사용 (끊김 없음)
-    if (useMediaRecorder) {
-      return startMediaRecording()
-    }
+  const processAudioToText = async (audioBlob: Blob, mimeType: string) => {
+    setIsProcessing(true)
+    try {
+      const reader = new FileReader()
+      reader.onloadend = async () => {
+        const base64 = (reader.result as string).split(',')[1]
+        console.log(`[STT] 전송 시작: ${base64?.length || 0} chars`)
 
-    // iOS: Web Speech API 사용 (끊김 있지만 작동)
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SpeechRecognition) {
-      alert('브라우저가 음성 인식을 지원하지 않습니다. Chrome을 사용해 주세요.')
-      return
-    }
-    if (isRecording || recognitionRef.current) return
+        try {
+          const resp = await fetch(`${API_BASE}/api/stt/recognize-chunk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audioData: base64, mimeType }),
+          })
+          const data = await resp.json()
 
-    const recognition = new SpeechRecognition()
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.lang = 'ko-KR'
-    // 일부 기기에서 대안 결과가 많으면 지연이 늘어나는 문제가 있어 1로 제한
-    try { (recognition as any).maxAlternatives = 1 } catch {}
-    isRecordingRef.current = true
+          console.log('[STT] 응답:', data)
 
-    // 마이크 스트림 및 에너지 감시 시작(인식 엔진과 별개로 오디오 경로 유지)
-    try { await startMicStream() } catch {}
-
-    const attachHandlers = (rec: any) => {
-      let finalText = transcript
-      rec.onresult = (event: any) => {
-        // 모든 onresult 호출 시 타임스탬프 갱신하여 연속성 유지
-        lastSpeechTsRef.current = Date.now()
-        let interim = ''
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i]
-          const text = result[0].transcript
-          if (result.isFinal) {
-            finalText += (finalText ? '\n' : '') + text.trim()
-            setTranscript(finalText)
+          if (data.text) {
+            setTranscript(prev => prev ? prev + '\n' + data.text : data.text)
+            console.log(`[STT] 성공: ${data.text.length} chars`)
           } else {
-            interim += text
+            alert('음성이 인식되지 않았습니다. 다시 시도해 주세요.')
           }
+        } catch (err) {
+          console.error('[STT] 전송 실패:', err)
+          alert('음성 변환 중 오류가 발생했습니다.')
+        } finally {
+          setIsProcessing(false)
         }
       }
-      rec.onerror = (e: any) => {
-        console.error('Recognition error:', e)
-        const restartable = ['no-speech', 'network', 'aborted', 'audio-capture']
-        if (isRecordingRef.current && restartable.includes(e?.error)) {
-          attemptRestart('error')
-        }
-        if (e?.error === 'not-allowed') {
-          alert('마이크 권한이 허용되지 않았습니다. 브라우저/OS 권한을 확인해 주세요.')
-          stopRecording()
-        }
-      }
-      ;(rec as any).onspeechstart = () => { lastSpeechTsRef.current = Date.now(); clearSilenceTimeout() }
-      // onspeechend 재시작 로직 제거: 모바일에서 짧은 무음에도 빈번히 발생하여 끊김 현상 유발
-      ;(rec as any).onspeechend = () => { /* 재시작 로직 제거 - 에너지 감지와 silenceWatcher만 활용 */ }
-      rec.onend = () => {
-        if (!isRecordingRef.current) {
-          setIsRecording(false)
-          recognitionRef.current = null
-          return
-        }
-        // 갤럭시 등 모바일에서 onend가 빈번히 발생하여 끊김 유발
-        // 마지막 발화 이후 20초 이상 경과했을 때만 재시작 시도
-        const silenceFor = Date.now() - lastSpeechTsRef.current
-        if (silenceFor < 20000) {
-          // 20초 미만이면 즉시 재시작하여 끊김 없이 유지
-          setIsRecording(true)
-          attemptRestart('silence')
-        } else {
-          // 20초 이상 무음이면 자연스럽게 종료 대기
-          setIsRecording(true)
-        }
-      }
-      ;(rec as any).onstart = () => {
-        try { acquireWakeLock() } catch {}
-        resetRestartInfo()
-        try {
-          ;(rec as any).continuous = true
-          ;(rec as any).interimResults = true
-        } catch {}
-      }
+      reader.readAsDataURL(audioBlob)
+    } catch (err) {
+      console.error('[STT] 처리 실패:', err)
+      setIsProcessing(false)
     }
-
-    const attemptRestart = (cause: 'error' | 'silence' = 'error') => {
-      if (!isRecordingRef.current) return
-      const now = Date.now()
-      const isBurst = now - restartInfoRef.current.last < 300
-      restartInfoRef.current.last = now
-      // 오류에 의한 재시작만 루프 카운트에 포함하고, 침묵에 의한 재시작은 카운트를 리셋합니다.
-      if (cause === 'error') {
-        restartInfoRef.current.count = isBurst ? restartInfoRef.current.count + 1 : 0
-      } else {
-        restartInfoRef.current.count = 0
-      }
-
-      // 오류로 인한 재시작이 과도하게 반복되면 재시도만 중단하고, 20초 자동 종료를 기다립니다.
-      if (cause === 'error' && restartInfoRef.current.count >= 5) {
-        console.warn('음성 인식 오류가 반복되어 재시작을 중단합니다. 20초 후 자동 종료됩니다.')
-        alert('마이크 입력이 불안정합니다. 재시도는 중단하고 20초 무음 후 자동 종료됩니다.')
-        return
-      }
-
-      const rec = recognitionRef.current
-      if (cause === 'silence') {
-        // 즉시 재시작으로 끊김 완전 제거
-        if (restartTimeoutRef.current) return
-        restartTimeoutRef.current = window.setTimeout(() => {
-          restartTimeoutRef.current = null
-          if (!isRecordingRef.current) return
-          try {
-            try { rec?.stop?.() } catch {}
-            rec?.start()
-          } catch (e) {
-            console.warn('Silence restart failed:', e)
-            // 실패 시 새 인식 객체 생성
-            const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-            if (SR) {
-              const newRec = new SR()
-              newRec.continuous = true
-              newRec.interimResults = true
-              newRec.lang = 'ko-KR'
-              try { (newRec as any).maxAlternatives = 1 } catch {}
-              recognitionRef.current = newRec
-              attachHandlers(newRec)
-              try { newRec.start() } catch {}
-            }
-          }
-        }, 100)  // 100ms로 최소화하여 끊김 없이 즉시 재시작
-        return
-      }
-
-      // 오류로 인한 재시작은 점진적 백오프(최대 3초)
-      if (restartTimeoutRef.current) return
-      const delay = Math.min(200 + restartInfoRef.current.count * 400, 3000)
-      restartTimeoutRef.current = window.setTimeout(() => {
-        restartTimeoutRef.current = null
-        if (!isRecordingRef.current) return
-        try {
-          try { rec?.stop?.() } catch {}
-          rec?.start()
-        } catch {
-          // 재시작 실패 시 소폭 지연 후 1회 추가 시도
-          const retryDelay = 400
-          restartTimeoutRef.current = window.setTimeout(() => {
-            restartTimeoutRef.current = null
-            if (isRecordingRef.current) {
-              try {
-                try { rec?.stop?.() } catch {}
-                rec?.start()
-              } catch {
-                const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-                if (SR) {
-                  const newRec = new SR()
-                  newRec.continuous = true
-                  newRec.interimResults = true
-                  newRec.lang = 'ko-KR'
-                  try { (newRec as any).maxAlternatives = 1 } catch {}
-                  recognitionRef.current = newRec
-                  attachHandlers(newRec)
-                  try { newRec.start() } catch {}
-                }
-              }
-            }
-          }, retryDelay)
-        }
-      }, delay)
-    }
-
-    attachHandlers(recognition)
-
-    recognitionRef.current = recognition
-    recognition.start()
-    setIsRecording(true)
-    lastSpeechTsRef.current = Date.now()
-    startSilenceWatcher()
-    acquireWakeLock()
-    startRecWatchdog()
   }
 
-  const stopRecording = () => {
-    // Android: MediaRecorder 정지
-    if (useMediaRecorder) {
-      return stopMediaRecording()
-    }
-
-    // iOS: Web Speech API 정지
-    const rec = recognitionRef.current
-    // 재시작 루프를 방지하기 위해 먼저 플래그를 내리고 이벤트를 해제합니다.
-    isRecordingRef.current = false
-    setIsRecording(false)
-    if (rec) {
-      try {
-        rec.onend = null
-        rec.onerror = null
-        ;(rec as any).onspeechend = null
-        ;(rec as any).onsoundend = null
-        ;(rec as any).onaudioend = null
-      } catch {}
-      try { (rec as any).abort?.() } catch {}
-      try { rec.stop() } catch {}
-      recognitionRef.current = null
-    }
-    awaitWakeRelease()
-    // 오디오 리소스 정리
-    stopMicStream()
-    stopRecWatchdog()
-    // 예약된 재시작 작업이 있으면 취소
-    if (restartTimeoutRef.current) {
-      clearTimeout(restartTimeoutRef.current)
-      restartTimeoutRef.current = null
-    }
-    if (silenceTimeoutRef.current) {
-      clearTimeout(silenceTimeoutRef.current)
-      silenceTimeoutRef.current = null
-    }
-    if (silenceWatcherRef.current) {
-      clearInterval(silenceWatcherRef.current)
-      silenceWatcherRef.current = null
-    }
-  }
 
   const clearTranscript = () => {
     setTranscript('')
@@ -743,31 +333,22 @@ function App() {
           </button>
           <button className="btn" onClick={clearTranscript}>초기화</button>
         </div>
-        {isRecording && (navigator as any)?.wakeLock && (
-          <p className="help"><AlertCircle size={14} /> 녹음 중 화면 꺼짐 방지 활성(지원 기기). 화면을 켠 상태에서 사용하세요.</p>
+        {isRecording && (
+          <p className="help"><CheckCircle2 size={14} /> 녹음 중입니다. 정지 버튼을 눌러 녹음을 종료하세요.</p>
+        )}
+        {isProcessing && (
+          <p className="help"><Loader2 size={14} /> 음성을 텍스트로 변환 중입니다. 잠시만 기다려 주세요...</p>
         )}
           <p className="help">
-            <Mic size={14} /> 마이크 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 녹음 중에는 텍스트가 실시간으로 누적됩니다.
-            {useMediaRecorder && (
-              <><br/><CheckCircle2 size={14} /> Android 감지: 끊김 없는 MediaRecorder 모드 활성화</>
-            )}
-            {!useMediaRecorder && (
-              <><br/><AlertCircle size={14} /> iOS/기타: Web Speech API 모드 (말을 멈추면 일시적으로 끊길 수 있음)</>
-            )}
+            <Mic size={14} /> 녹음 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 종료 후 자동으로 텍스트로 변환됩니다.
           </p>
           <textarea
             value={transcript}
             onChange={(e) => setTranscript(e.target.value)}
-            placeholder="여기에 음성 인식 결과가 실시간으로 누적됩니다."
+            placeholder="녹음 후 정지하면 여기에 음성 인식 결과가 표시됩니다."
             className="textarea-md mt-8"
+            disabled={isProcessing}
           />
-          {useMediaRecorder && debugInfo && (
-            <div style={{ marginTop: 8, padding: 8, background: '#1a1a1a', border: '1px solid #333', borderRadius: 4, fontSize: 12, fontFamily: 'monospace', whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto' }}>
-              <strong>🔍 디버그 로그:</strong>
-              <br/>
-              {debugInfo}
-            </div>
-          )}
         </section>
 
         <section ref={composeRef} className="section" id="compose">
