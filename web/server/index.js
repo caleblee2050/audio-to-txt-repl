@@ -335,10 +335,11 @@ wss.on('connection', async (ws) => {
       if (message.type === 'audio') {
         // 오디오 데이터를 Base64로 받음 (16-bit PCM, 16kHz, mono)
         const audioBase64 = message.audio;
+        const audioBytes = Buffer.from(audioBase64, 'base64');
+        const audioSizeKB = (audioBytes.length / 1024).toFixed(1);
+        console.log(`[Live] Audio chunk received: ${audioSizeKB} KB`);
 
         // Google Cloud STT로 먼저 텍스트 변환
-        const audioBytes = Buffer.from(audioBase64, 'base64');
-
         const sttConfig = {
           encoding: 'WEBM_OPUS',
           sampleRateHertz: 48000,
@@ -352,6 +353,7 @@ wss.on('connection', async (ws) => {
           config: sttConfig,
         };
 
+        console.log(`[Live] Calling STT API (${audioSizeKB} KB)...`);
         const [response] = await speechClient.recognize(request);
         const sttText = response.results
           ?.map(result => result.alternatives?.[0]?.transcript || '')
@@ -362,6 +364,7 @@ wss.on('connection', async (ws) => {
           console.log('[Live] STT:', sttText.substring(0, 50));
 
           // Gemini로 교정 (실시간)
+          console.log('[Live] Calling Gemini for correction...');
           const result = await geminiSession.sendMessage(sttText);
           const correctedText = result.response.text();
 
@@ -373,6 +376,8 @@ wss.on('connection', async (ws) => {
             original: sttText,
             corrected: correctedText
           }));
+        } else {
+          console.warn(`[Live] STT returned empty result for ${audioSizeKB} KB audio`);
         }
       } else if (message.type === 'stop') {
         console.log('[Live] Client requested stop');
@@ -380,6 +385,7 @@ wss.on('connection', async (ws) => {
       }
     } catch (err) {
       console.error('[Live] Message processing error:', err);
+      console.error('[Live] Error details:', err.message, err.stack);
       ws.send(JSON.stringify({ error: err.message }));
     }
   });

@@ -203,7 +203,7 @@ function App() {
       })
       mediaRecorderRef.current = recorder
 
-      // 오디오 청크를 실시간으로 전송 (2초마다)
+      // 오디오 청크를 실시간으로 전송 (6초마다)
       recorder.ondataavailable = async (event) => {
         if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
           const audioSizeKB = (event.data.size / 1024).toFixed(1)
@@ -224,7 +224,7 @@ function App() {
         }
       }
 
-      recorder.start(2000) // 2초마다 청크 생성 및 전송
+      recorder.start(6000) // 6초마다 청크 생성 및 전송 (STT 인식률 향상)
 
       // 녹음 시간 타이머 시작
       recordingStartTimeRef.current = Date.now()
