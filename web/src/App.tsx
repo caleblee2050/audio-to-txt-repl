@@ -203,10 +203,11 @@ function App() {
       })
       mediaRecorderRef.current = recorder
 
-      // 오디오 청크를 실시간으로 전송 (500ms마다)
+      // 오디오 청크를 실시간으로 전송 (2초마다)
       recorder.ondataavailable = async (event) => {
         if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-          console.log(`[Live] Sending audio chunk: ${event.data.size} bytes`)
+          const audioSizeKB = (event.data.size / 1024).toFixed(1)
+          console.log(`[Live] Sending audio chunk: ${audioSizeKB} KB`)
           setIsProofreading(true)
 
           // Base64로 변환 후 WebSocket 전송
@@ -217,12 +218,13 @@ function App() {
               type: 'audio',
               audio: base64
             }))
+            console.log(`[Live] Audio chunk sent (${base64.length} chars)`)
           }
           reader.readAsDataURL(event.data)
         }
       }
 
-      recorder.start(500) // 500ms마다 청크 생성 및 전송
+      recorder.start(2000) // 2초마다 청크 생성 및 전송
 
       // 녹음 시간 타이머 시작
       recordingStartTimeRef.current = Date.now()
