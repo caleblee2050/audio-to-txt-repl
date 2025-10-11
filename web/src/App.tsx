@@ -29,6 +29,7 @@ function App() {
   const [isRecordingInstruction, setIsRecordingInstruction] = useState(false)
   const [isProcessingInstruction, setIsProcessingInstruction] = useState(false)
   const [isEditingTranscript, setIsEditingTranscript] = useState(false) // 내용 수정 중
+  const [isProofreading, setIsProofreading] = useState(false) // 오타 교정 중
 
   // 녹음 시간 및 오디오 정보
   const [recordingDuration, setRecordingDuration] = useState(0)
@@ -455,6 +456,35 @@ function App() {
     }
   }
 
+  // 오타 교정 (녹음 종료 후 일괄 교정)
+  const proofreadTranscript = async () => {
+    if (geminiEnabled === false) {
+      alert('서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정 필요).')
+      return
+    }
+    if (!transcript.trim()) {
+      alert('먼저 음성을 녹음하여 텍스트를 생성해 주세요.')
+      return
+    }
+
+    try {
+      setIsProofreading(true)
+      const resp = await fetch(`${API_BASE}/api/proofread`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: transcript }),
+      })
+      const data = await resp.json()
+      if (!resp.ok) throw new Error(data?.error || 'Proofread failed')
+      // 교정된 내용으로 업데이트
+      setTranscript(data.text || '')
+    } catch (err: any) {
+      alert('오타 교정 중 오류: ' + (err?.message || String(err)))
+    } finally {
+      setIsProofreading(false)
+    }
+  }
+
   // 내용 수정 (음성/텍스트 지시 반영) → 같은 창에 업데이트
   const editTranscriptWithAI = async () => {
     if (geminiEnabled === false) {
@@ -573,7 +603,7 @@ function App() {
           <div className="brand" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Mic size={18} />
             Audio → Text Composer
-            <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 4 }}>v1.4.1</span>
+            <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 4 }}>v1.5.0</span>
           </div>
           <span className="subtitle">스마트폰 최적화 · 실시간 음성 정리</span>
           <span className="grow" />
@@ -611,6 +641,14 @@ function App() {
                 {isRecording ? <Square size={28} /> : <Mic size={28} />}
               </button>
               <button className="btn" onClick={clearTranscript} style={{ flexShrink: 0 }}>초기화</button>
+              <button
+                className="btn btn-primary"
+                onClick={proofreadTranscript}
+                disabled={geminiEnabled === false || isProofreading || !transcript.trim() || isRecording}
+                style={{ flexShrink: 0 }}
+              >
+                {isProofreading ? '교정 중...' : '✨ 오타 수정'}
+              </button>
             </div>
 
             {isRecording && (
@@ -623,9 +661,14 @@ function App() {
                 <Loader2 size={16} /> 음성을 텍스트로 변환 중입니다. 긴 오디오는 처리에 시간이 걸릴 수 있습니다...
               </p>
             )}
-            {!isRecording && !isProcessing && (
+            {isProofreading && (
               <p className="help" style={{ margin: 0 }}>
-                <Mic size={16} /> 녹음 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 종료 후 자동으로 아래에 텍스트로 변환됩니다.
+                <Loader2 size={16} /> Gemini가 오타를 교정하고 있습니다...
+              </p>
+            )}
+            {!isRecording && !isProcessing && !isProofreading && (
+              <p className="help" style={{ margin: 0 }}>
+                <Mic size={16} /> 녹음 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 종료 후 '✨ 오타 수정' 버튼으로 교정할 수 있습니다.
               </p>
             )}
           </div>
@@ -658,9 +701,9 @@ function App() {
             <textarea
               value={transcript}
               onChange={(e) => setTranscript(e.target.value)}
-              placeholder="녹음한 내용이 여기에 표시됩니다. 직접 수정하거나 아래 AI 수정 기능을 사용하세요."
+              placeholder="녹음한 내용이 여기에 표시됩니다. 직접 수정하거나 '✨ 오타 수정' 버튼으로 자동 교정할 수 있습니다."
               className="textarea-lg"
-              disabled={isProcessing}
+              disabled={isProcessing || isProofreading}
               style={{
                 fontSize: 16,
                 lineHeight: 1.6,

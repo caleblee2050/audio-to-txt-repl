@@ -104,6 +104,66 @@ app.post('/api/stt/recognize-chunk', async (req, res) => {
   }
 });
 
+// Gemini 오타 교정 endpoint (녹음 종료 후 일괄 교정)
+app.post('/api/proofread', async (req, res) => {
+  try {
+    if (!GOOGLE_API_KEY) {
+      return res.status(500).json({ error: 'GOOGLE_API_KEY is not configured' });
+    }
+
+    const { text } = req.body || {};
+    if (!text) {
+      return res.status(400).json({ error: 'Missing "text"' });
+    }
+
+    const systemInstruction = '너는 음성 인식(STT) 결과를 교정하는 전문가야. 다음 작업을 수행해줘:\n1. 오타 수정\n2. 맞춤법 교정\n3. 문장 부호 정리\n4. 불필요한 반복 제거\n5. 자연스러운 문장으로 다듬기\n\n원래 의미와 내용은 절대 바꾸지 말고, 읽기 쉽고 깔끔하게 교정만 해줘.';
+    const userInput = `${systemInstruction}\n\n원문:\n${text}`;
+
+    const candidates = [
+      'gemini-2.5-flash',
+      'gemini-2.5-pro',
+      'gemini-1.0-pro',
+    ];
+
+    const payload = {
+      contents: [
+        {
+          parts: [{ text: userInput }],
+        },
+      ],
+    };
+
+    let lastError = null;
+    for (const modelName of candidates) {
+      const url = `https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${GOOGLE_API_KEY}`;
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          lastError = data;
+          console.error(`[Gemini error][${modelName}]`, data);
+          continue;
+        }
+        const correctedText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        console.log(`[Proofread] 성공 (${modelName}): ${text.length} → ${correctedText.length} chars`);
+        return res.json({ text: correctedText, model: modelName });
+      } catch (e) {
+        lastError = String(e?.message || e);
+        console.error(`[Gemini fetch error][${modelName}]`, e);
+      }
+    }
+
+    return res.status(500).json({ error: 'Failed to proofread text', details: lastError || 'Unknown error' });
+  } catch (err) {
+    console.error('Proofread error:', err);
+    res.status(500).json({ error: 'Failed to proofread text', details: String(err?.message || err) });
+  }
+});
+
 // Gemini compose endpoint
 app.post('/api/compose', async (req, res) => {
   try {
