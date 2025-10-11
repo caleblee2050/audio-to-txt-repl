@@ -23,20 +23,18 @@ function App() {
   const [instruction, setInstruction] = useState('')
   const [activeTab, setActiveTab] = useState<'record' | 'compose' | 'saved'>('record')
   const [isComposing, setIsComposing] = useState(false)
-  const [isProcessing, setIsProcessing] = useState(false)
 
   // 음성 지시 녹음 상태
   const [isRecordingInstruction, setIsRecordingInstruction] = useState(false)
   const [isProcessingInstruction, setIsProcessingInstruction] = useState(false)
   const [isEditingTranscript, setIsEditingTranscript] = useState(false) // 내용 수정 중
-  const [isProofreading, setIsProofreading] = useState(false) // 오타 교정 중
+  const [autoProofread, setAutoProofread] = useState(true) // 실시간 자동 교정 활성화
+  const [isProofreading, setIsProofreading] = useState(false) // 교정 진행 중
 
   // 녹음 시간 및 오디오 정보
   const [recordingDuration, setRecordingDuration] = useState(0)
-  const [lastAudioSize, setLastAudioSize] = useState(0)
   const recordingStartTimeRef = useRef<number>(0)
   const recordingTimerRef = useRef<number | null>(null)
-  const recorderRestartIntervalRef = useRef<number | null>(null) // 30초마다 recorder 재시작용
 
   const recordRef = useRef<HTMLDivElement | null>(null)
   const composeRef = useRef<HTMLDivElement | null>(null)
@@ -46,6 +44,9 @@ function App() {
   // 메인 녹음용 MediaRecorder
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
+
+  // WebSocket 연결
+  const wsRef = useRef<WebSocket | null>(null)
 
   // 음성 지시용 MediaRecorder
   const instructionRecorderRef = useRef<MediaRecorder | null>(null)
@@ -104,6 +105,9 @@ function App() {
         if (mediaStreamRef.current) {
           mediaStreamRef.current.getTracks().forEach(t => t.stop())
         }
+        if (wsRef.current) {
+          wsRef.current.close()
+        }
         awaitWakeRelease()
       } catch {}
     }
@@ -127,68 +131,61 @@ function App() {
     wakeLockRef.current = null
   }
 
-  // 30초마다 MediaRecorder를 재시작하는 헬퍼 함수
-  const startNewRecorderSession = (stream: MediaStream, mimeType: string) => {
-    // 이전 recorder가 있으면 정리
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      try {
-        mediaRecorderRef.current.stop()
-      } catch (e) {
-        console.warn('[녹음] 이전 recorder 정지 실패:', e)
-      }
-    }
-
-    // 새 recorder 생성
-    const recorder = new MediaRecorder(stream, { mimeType })
-    mediaRecorderRef.current = recorder
-    const currentChunks: Blob[] = []
-
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        currentChunks.push(event.data)
-        console.log(`[녹음] 청크 저장: ${event.data.size} bytes`)
-      }
-    }
-
-    recorder.onstop = async () => {
-      console.log('[녹음 세션] 완료, STT 처리 시작...')
-
-      if (currentChunks.length > 0) {
-        const audioBlob = new Blob(currentChunks, { type: mimeType })
-        const audioSizeKB = audioBlob.size / 1024
-        const audioSizeMB = (audioBlob.size / 1024 / 1024).toFixed(2)
-
-        console.log(`[STT] 세션 오디오: ${audioSizeMB} MB`)
-
-        // 무음 감지
-        if (audioSizeKB < 5) {
-          console.log(`[STT] 무음 감지로 건너뜀`)
-          return
-        }
-
-        setLastAudioSize(audioBlob.size)
-
-        // 백그라운드로 STT 처리 (30초 단위 독립 오디오)
-        await processAudioToText(audioBlob, mimeType, 30, true).catch(err => {
-          console.error('[STT] 처리 실패:', err)
-        })
-      }
-    }
-
-    // 녹음 시작
-    recorder.start()
-    console.log(`[녹음 세션] 시작: ${mimeType}`)
-  }
-
-  // 통합 녹음: 30초마다 recorder 재시작
+  // WebSocket 기반 실시간 스트리밍 녹음
   const startRecording = async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
       alert('브라우저가 오디오 녹음을 지원하지 않습니다.')
       return
     }
 
+    if (!autoProofread || !geminiEnabled) {
+      alert('실시간 자동 교정이 비활성화되어 있습니다. 체크박스를 활성화해주세요.')
+      return
+    }
+
     try {
-      // 스트림은 한 번만 획득 (소리 안 남)
+      // WebSocket 연결
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsUrl = `${wsProtocol}//${window.location.host}/api/live-stream`
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        console.log('[Live] WebSocket connected')
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+
+          if (data.status === 'connected') {
+            console.log('[Live] Gemini session ready')
+          } else if (data.type === 'text') {
+            // 교정된 텍스트 수신
+            const correctedText = data.corrected
+            setTranscript(prev => prev ? prev + ' ' + correctedText : correctedText)
+            console.log('[Live] Received corrected text:', correctedText.substring(0, 50))
+            setIsProofreading(false)
+          } else if (data.error) {
+            console.error('[Live] Error:', data.error)
+            alert(`오류: ${data.error}`)
+          }
+        } catch (err) {
+          console.error('[Live] Message parse error:', err)
+        }
+      }
+
+      ws.onerror = (err) => {
+        console.error('[Live] WebSocket error:', err)
+        alert('WebSocket 연결 오류가 발생했습니다.')
+      }
+
+      ws.onclose = () => {
+        console.log('[Live] WebSocket disconnected')
+        setIsProofreading(false)
+      }
+
+      // 마이크 스트림 획득
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       mediaStreamRef.current = stream
 
@@ -199,6 +196,34 @@ function App() {
         ? 'audio/mp4'
         : 'audio/webm'
 
+      // MediaRecorder 생성 (실시간 전송)
+      const recorder = new MediaRecorder(stream, {
+        mimeType,
+        audioBitsPerSecond: 128000
+      })
+      mediaRecorderRef.current = recorder
+
+      // 오디오 청크를 실시간으로 전송 (500ms마다)
+      recorder.ondataavailable = async (event) => {
+        if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+          console.log(`[Live] Sending audio chunk: ${event.data.size} bytes`)
+          setIsProofreading(true)
+
+          // Base64로 변환 후 WebSocket 전송
+          const reader = new FileReader()
+          reader.onloadend = () => {
+            const base64 = (reader.result as string).split(',')[1]
+            ws.send(JSON.stringify({
+              type: 'audio',
+              audio: base64
+            }))
+          }
+          reader.readAsDataURL(event.data)
+        }
+      }
+
+      recorder.start(500) // 500ms마다 청크 생성 및 전송
+
       // 녹음 시간 타이머 시작
       recordingStartTimeRef.current = Date.now()
       setRecordingDuration(0)
@@ -207,43 +232,17 @@ function App() {
         setRecordingDuration(elapsed)
       }, 1000)
 
-      // 첫 번째 recorder 세션 시작
-      startNewRecorderSession(stream, mimeType)
-
-      // 30초마다 recorder 재시작 (스트림은 유지, 소리 안 남)
-      recorderRestartIntervalRef.current = window.setInterval(() => {
-        console.log('[녹음] 30초 경과, 새 세션 시작...')
-
-        // 이전 recorder 정지 (STT 자동 처리됨)
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-          mediaRecorderRef.current.stop()
-        }
-
-        // 새 recorder 세션 시작 (같은 stream 재사용)
-        setTimeout(() => {
-          if (mediaStreamRef.current) {
-            startNewRecorderSession(mediaStreamRef.current, mimeType)
-          }
-        }, 100) // 100ms 지연으로 안정성 확보
-      }, 30000) // 30초
-
       setIsRecording(true)
       acquireWakeLock()
-      console.log(`[녹음] 시작: ${mimeType}, 30초마다 자동 재시작`)
+      console.log(`[Live] Recording started: ${mimeType}`)
     } catch (err) {
-      console.error('[녹음] 시작 실패:', err)
+      console.error('[Live] Start recording failed:', err)
       alert('마이크 권한을 허용해 주세요.')
     }
   }
 
   const stopRecording = () => {
-    console.log('[녹음] 정지 요청')
-
-    // 재시작 인터벌 정지
-    if (recorderRestartIntervalRef.current) {
-      clearInterval(recorderRestartIntervalRef.current)
-      recorderRestartIntervalRef.current = null
-    }
+    console.log('[Live] Stop recording requested')
 
     // 타이머 정지
     if (recordingTimerRef.current) {
@@ -251,12 +250,12 @@ function App() {
       recordingTimerRef.current = null
     }
 
-    // 현재 recorder 정지 (마지막 세션 STT 처리됨)
+    // MediaRecorder 정지
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
         mediaRecorderRef.current.stop()
       } catch (err) {
-        console.error('[녹음] 정지 실패:', err)
+        console.error('[Live] Stop recorder failed:', err)
       }
     }
 
@@ -266,76 +265,17 @@ function App() {
       mediaStreamRef.current = null
     }
 
+    // WebSocket 연결 종료
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'stop' }))
+      wsRef.current.close()
+      wsRef.current = null
+    }
+
     setIsRecording(false)
+    setIsProofreading(false)
     awaitWakeRelease()
   }
-
-  const processAudioToText = async (audioBlob: Blob, mimeType: string, durationSeconds: number, isAutoChunk = false) => {
-    if (!isAutoChunk) {
-      setIsProcessing(true)
-    }
-    try {
-      const audioSizeMB = (audioBlob.size / 1024 / 1024).toFixed(2)
-      console.log(`[STT] 오디오 크기: ${audioSizeMB} MB, 실제 길이: ${durationSeconds}초`)
-
-      const reader = new FileReader()
-      reader.onloadend = async () => {
-        const base64 = (reader.result as string).split(',')[1]
-        console.log(`[STT] 전송 시작: ${base64?.length || 0} chars (${audioSizeMB} MB, ${durationSeconds}초)`)
-
-        try {
-          const resp = await fetch(`${API_BASE}/api/stt/recognize-chunk`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ audioData: base64, mimeType, durationSeconds }),
-          })
-          const data = await resp.json()
-
-          console.log('[STT] 응답:', data)
-
-          if (!resp.ok) {
-            // 서버 에러 처리
-            console.error('[STT] 서버 에러:', data)
-            if (!isAutoChunk) {
-              if (resp.status === 413) {
-                alert(data.details || '오디오 파일이 너무 큽니다. 10분 이내로 녹음해 주세요.')
-              } else {
-                alert(data.details || '음성 변환 중 오류가 발생했습니다.')
-              }
-            }
-            return
-          }
-
-          if (data.text) {
-            // 각 세션이 독립적이므로 그대로 추가
-            setTranscript(prev => prev ? prev + ' ' + data.text : data.text)
-            console.log(`[STT] 성공: ${data.text.length} chars`)
-          } else {
-            console.warn('[STT] 빈 응답 (오디오 크기:', audioSizeMB, 'MB,', durationSeconds, '초)')
-            // 자동 청크 처리일 때는 alert 안 띄움 (녹음 중 방해하지 않음)
-            if (!isAutoChunk) {
-              alert('음성이 인식되지 않았습니다. 명확하게 말씀해 주시거나, 녹음 시간을 줄여 주세요.')
-            }
-          }
-        } catch (err) {
-          console.error('[STT] 전송 실패:', err)
-          if (!isAutoChunk) {
-            alert('음성 변환 중 네트워크 오류가 발생했습니다.')
-          }
-        } finally {
-          if (!isAutoChunk) {
-            setIsProcessing(false)
-          }
-        }
-      }
-      reader.readAsDataURL(audioBlob)
-    } catch (err) {
-      console.error('[STT] 처리 실패:', err)
-      setIsProcessing(false)
-      alert('음성 처리 중 오류가 발생했습니다.')
-    }
-  }
-
 
   const clearTranscript = () => {
     setTranscript('')
@@ -456,34 +396,6 @@ function App() {
     }
   }
 
-  // 오타 교정 (녹음 종료 후 일괄 교정)
-  const proofreadTranscript = async () => {
-    if (geminiEnabled === false) {
-      alert('서버에 Gemini 설정이 없습니다(.env에 GOOGLE_API_KEY 설정 필요).')
-      return
-    }
-    if (!transcript.trim()) {
-      alert('먼저 음성을 녹음하여 텍스트를 생성해 주세요.')
-      return
-    }
-
-    try {
-      setIsProofreading(true)
-      const resp = await fetch(`${API_BASE}/api/proofread`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: transcript }),
-      })
-      const data = await resp.json()
-      if (!resp.ok) throw new Error(data?.error || 'Proofread failed')
-      // 교정된 내용으로 업데이트
-      setTranscript(data.text || '')
-    } catch (err: any) {
-      alert('오타 교정 중 오류: ' + (err?.message || String(err)))
-    } finally {
-      setIsProofreading(false)
-    }
-  }
 
   // 내용 수정 (음성/텍스트 지시 반영) → 같은 창에 업데이트
   const editTranscriptWithAI = async () => {
@@ -603,7 +515,7 @@ function App() {
           <div className="brand" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Mic size={18} />
             Audio → Text Composer
-            <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 4 }}>v1.5.0</span>
+            <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 4 }}>v2.0.0</span>
           </div>
           <span className="subtitle">스마트폰 최적화 · 실시간 음성 정리</span>
           <span className="grow" />
@@ -641,14 +553,16 @@ function App() {
                 {isRecording ? <Square size={28} /> : <Mic size={28} />}
               </button>
               <button className="btn" onClick={clearTranscript} style={{ flexShrink: 0 }}>초기화</button>
-              <button
-                className="btn btn-primary"
-                onClick={proofreadTranscript}
-                disabled={geminiEnabled === false || isProofreading || !transcript.trim() || isRecording}
-                style={{ flexShrink: 0 }}
-              >
-                {isProofreading ? '교정 중...' : '✨ 오타 수정'}
-              </button>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, cursor: 'pointer', userSelect: 'none', marginLeft: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={autoProofread}
+                  onChange={(e) => setAutoProofread(e.target.checked)}
+                  disabled={geminiEnabled === false}
+                  style={{ width: 18, height: 18, cursor: 'pointer' }}
+                />
+                <span style={{ fontWeight: 500 }}>✨ 실시간 자동 교정</span>
+              </label>
             </div>
 
             {isRecording && (
@@ -656,19 +570,14 @@ function App() {
                 <CheckCircle2 size={16} /> 녹음 중: {Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, '0')}
               </p>
             )}
-            {isProcessing && (
-              <p className="help" style={{ margin: 0 }}>
-                <Loader2 size={16} /> 음성을 텍스트로 변환 중입니다. 긴 오디오는 처리에 시간이 걸릴 수 있습니다...
-              </p>
-            )}
             {isProofreading && (
               <p className="help" style={{ margin: 0 }}>
-                <Loader2 size={16} /> Gemini가 오타를 교정하고 있습니다...
+                <Loader2 size={16} /> Gemini가 실시간으로 오타를 교정하고 있습니다...
               </p>
             )}
-            {!isRecording && !isProcessing && !isProofreading && (
+            {!isRecording && !isProofreading && (
               <p className="help" style={{ margin: 0 }}>
-                <Mic size={16} /> 녹음 버튼을 눌러 녹음을 시작하고, 정지 버튼으로 종료합니다. 종료 후 '✨ 오타 수정' 버튼으로 교정할 수 있습니다.
+                <Mic size={16} /> 녹음 버튼을 눌러 녹음을 시작하세요. {autoProofread && geminiEnabled ? '실시간 자동 교정이 활성화되어 있습니다.' : '원본 텍스트가 표시됩니다.'}
               </p>
             )}
           </div>
@@ -689,21 +598,16 @@ function App() {
                     {transcript.length >= 300 && transcript.length < 500 && ' (300자 이상)'}
                   </span>
                 )}
-                {lastAudioSize > 0 && (
-                  <span>
-                    🎤 {lastAudioSize >= 1024 * 1024
-                      ? `${(lastAudioSize / 1024 / 1024).toFixed(2)} MB`
-                      : `${(lastAudioSize / 1024).toFixed(1)} KB`}
-                  </span>
-                )}
               </div>
             </div>
             <textarea
               value={transcript}
               onChange={(e) => setTranscript(e.target.value)}
-              placeholder="녹음한 내용이 여기에 표시됩니다. 직접 수정하거나 '✨ 오타 수정' 버튼으로 자동 교정할 수 있습니다."
+              placeholder={autoProofread && geminiEnabled
+                ? "녹음한 내용이 실시간으로 교정되어 표시됩니다. 직접 수정도 가능합니다."
+                : "녹음한 내용이 원본 그대로 표시됩니다. 직접 수정하거나 위에서 자동 교정을 활성화하세요."}
               className="textarea-lg"
-              disabled={isProcessing || isProofreading}
+              disabled={isProofreading}
               style={{
                 fontSize: 16,
                 lineHeight: 1.6,

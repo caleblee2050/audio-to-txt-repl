@@ -2,9 +2,12 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { SpeechClient } from '@google-cloud/speech';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { WebSocketServer } from 'ws';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import http from 'http';
 
 dotenv.config();
 
@@ -14,6 +17,7 @@ app.use(express.json({ limit: '50mb' })); // 오디오 데이터 전송을 위�
 
 const { GOOGLE_API_KEY } = process.env;
 const speechClient = new SpeechClient();
+const genAI = GOOGLE_API_KEY ? new GoogleGenerativeAI(GOOGLE_API_KEY) : null;
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, geminiConfigured: !!GOOGLE_API_KEY });
@@ -276,6 +280,120 @@ try {
   // non-blocking; dist may not exist in dev
 }
 
-app.listen(PORT, () => {
+// Create HTTP server and WebSocket server
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: '/api/live-stream' });
+
+// Gemini Live API WebSocket handler
+wss.on('connection', async (ws) => {
+  console.log('[Live] Client connected');
+
+  if (!genAI) {
+    ws.send(JSON.stringify({ error: 'GOOGLE_API_KEY not configured' }));
+    ws.close();
+    return;
+  }
+
+  let geminiSession = null;
+
+  try {
+    // Gemini Live API 연결 (모델: gemini-2.0-flash-exp)
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash-exp',
+      systemInstruction: `너는 실시간 음성 인식 결과를 교정하는 전문가야. 다음 작업을 수행해줘:
+1. 오타 수정
+2. 맞춤법 교정
+3. 문장 부호 정리
+4. 불필요한 반복 제거
+5. 자연스러운 문장으로 다듬기
+
+원래 의미와 내용은 절대 바꾸지 말고, 읽기 쉽고 깔끔하게 교정만 해줘. 교정된 텍스트만 출력하고 다른 설명은 하지 마.`
+    });
+
+    geminiSession = await model.startChat({
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 8192,
+      },
+    });
+
+    console.log('[Live] Gemini session started');
+    ws.send(JSON.stringify({ status: 'connected' }));
+
+  } catch (err) {
+    console.error('[Live] Gemini connection error:', err);
+    ws.send(JSON.stringify({ error: 'Failed to connect to Gemini' }));
+    ws.close();
+    return;
+  }
+
+  // 클라이언트로부터 오디오 데이터 수신
+  ws.on('message', async (data) => {
+    try {
+      const message = JSON.parse(data);
+
+      if (message.type === 'audio') {
+        // 오디오 데이터를 Base64로 받음 (16-bit PCM, 16kHz, mono)
+        const audioBase64 = message.audio;
+
+        // Google Cloud STT로 먼저 텍스트 변환
+        const audioBytes = Buffer.from(audioBase64, 'base64');
+
+        const sttConfig = {
+          encoding: 'WEBM_OPUS',
+          sampleRateHertz: 48000,
+          languageCode: 'ko-KR',
+          audioChannelCount: 1,
+          enableAutomaticPunctuation: true,
+        };
+
+        const request = {
+          audio: { content: audioBytes },
+          config: sttConfig,
+        };
+
+        const [response] = await speechClient.recognize(request);
+        const sttText = response.results
+          ?.map(result => result.alternatives?.[0]?.transcript || '')
+          .join('\n')
+          .trim();
+
+        if (sttText) {
+          console.log('[Live] STT:', sttText.substring(0, 50));
+
+          // Gemini로 교정 (실시간)
+          const result = await geminiSession.sendMessage(sttText);
+          const correctedText = result.response.text();
+
+          console.log('[Live] Corrected:', correctedText.substring(0, 50));
+
+          // 교정된 텍스트를 클라이언트에 전송
+          ws.send(JSON.stringify({
+            type: 'text',
+            original: sttText,
+            corrected: correctedText
+          }));
+        }
+      } else if (message.type === 'stop') {
+        console.log('[Live] Client requested stop');
+        ws.close();
+      }
+    } catch (err) {
+      console.error('[Live] Message processing error:', err);
+      ws.send(JSON.stringify({ error: err.message }));
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('[Live] Client disconnected');
+  });
+
+  ws.on('error', (err) => {
+    console.error('[Live] WebSocket error:', err);
+  });
+});
+
+server.listen(PORT, () => {
   console.log(`API server running at http://localhost:${PORT}`);
+  console.log(`WebSocket server running at ws://localhost:${PORT}/api/live-stream`);
 });
